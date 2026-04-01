@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Streamlit / local config
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Local env / secrets
+.env
+.env.*
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Logs / runtime artifacts
+*.log
+*.enc.json
+
+# Test / coverage
+.coverage
+htmlcov/
+
+# Generated exports
+*.png
+*.svg
+*.pdf
