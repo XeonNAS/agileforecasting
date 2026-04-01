@@ -1,1 +1,5 @@
-Full replacement build - 2026-02-05
+Version is defined in pyproject.toml and exposed as agile_mc.__version__.
+
+  python -c "import agile_mc; print(agile_mc.__version__)"
+
+Previous stamp: Full replacement build - 2026-02-05

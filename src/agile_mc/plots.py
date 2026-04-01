@@ -9,7 +9,6 @@ import plotly.graph_objects as go
 from .simulation import at_least_threshold, completion_cdf_by_date
 
 
-
 def how_many_figures(
     samples: np.ndarray,
     project_samples: np.ndarray | None = None,
@@ -80,7 +79,12 @@ def how_many_figures(
     )
 
     fig_pmf = go.Figure()
-    if project_samples is not None and bau_samples is not None and len(project_samples) == len(samples) and len(bau_samples) == len(samples):
+    if (
+        project_samples is not None
+        and bau_samples is not None
+        and len(project_samples) == len(samples)
+        and len(bau_samples) == len(samples)
+    ):
         project_samples = project_samples.astype(int)
         bau_samples = bau_samples.astype(int)
 
@@ -112,7 +116,7 @@ def how_many_figures(
         pmf[idx_map[int(v)]] = float(p)
     sigma = max(1.0, (x_max - x_min) / 30.0)
     kx = np.arange(-15, 16)
-    kernel = np.exp(-(kx ** 2) / (2 * sigma ** 2))
+    kernel = np.exp(-(kx**2) / (2 * sigma**2))
     kernel /= kernel.sum()
     smooth = np.convolve(pmf, kernel, mode="same")
 
@@ -147,7 +151,6 @@ def how_many_figures(
         "How Many - Exact Probability": fig_pmf,
         "How Many - At Most Chance": fig_cdf,
     }
-
 
 
 def when_figures(completion_dates: List[dt.date]) -> Dict[str, go.Figure]:

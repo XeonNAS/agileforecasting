@@ -34,7 +34,9 @@ class AdoClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{self.ado.organization}/{path.lstrip('/')}"
 
-    def _request(self, method: str, path: str, params: Optional[Dict[str, Any]] = None, json_body: Any = None) -> Dict[str, Any]:
+    def _request(
+        self, method: str, path: str, params: Optional[Dict[str, Any]] = None, json_body: Any = None
+    ) -> Dict[str, Any]:
         url = self._url(path)
 
         for attempt in range(5):
@@ -99,7 +101,12 @@ class AdoClient:
                     return [p for p in v if isinstance(p, dict)]
             # Best-effort: find a list of dicts that looks like capacity rows
             for v in payload.values():
-                if isinstance(v, list) and v and isinstance(v[0], dict) and ("teamMember" in v[0] or "teamMemberIdentity" in v[0]):
+                if (
+                    isinstance(v, list)
+                    and v
+                    and isinstance(v[0], dict)
+                    and ("teamMember" in v[0] or "teamMemberIdentity" in v[0])
+                ):
                     return [p for p in v if isinstance(p, dict)]
 
         return []
@@ -122,9 +129,9 @@ class AdoClient:
                 "errorPolicy": "Omit",
             },
         )
+
     def get_iteration_capacities(self, iteration_id: str) -> Dict[str, Any]:
         return self.get(
             f"{self.ado.project}/_apis/work/iterations/{iteration_id}/iterationcapacities",
             params={"api-version": "7.1"},
         )
-

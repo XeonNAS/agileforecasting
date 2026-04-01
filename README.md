@@ -1,48 +1,101 @@
-# Agile Monte Carlo (ADO-first) — Streamlit App (Full Replacement)
+# Agile Monte Carlo — Streamlit App
 
-This is a complete replacement for your Streamlit app, rebuilt to:
-- Source **throughput + calendar/capacity** from **Azure DevOps** (no CSV uploads)
-- Use your **saved query** to build daily throughput (missing working days => 0)
-- Use **iterations + capacities + team days off** to compute sprint capacity schedule (team + individual days off)
-- Remove Streamlit `use_container_width` warnings (uses runtime-safe helpers / HTML tables)
-- Provide ActionableAgile-style copy for **How Many**
-- Provide ActionableAgile-style **When** calendar (color bands) + "Sprint dd" per day
-- Allow chart downloads as **PNG or SVG** (Plotly + Kaleido)
+Monte Carlo forecasting for Agile teams using Azure DevOps data.
 
-## Setup (Ubuntu)
+- Sources **throughput + calendar/capacity** directly from **Azure DevOps** (no CSV uploads)
+- Uses a **saved query** to build daily throughput (missing working days → 0)
+- Uses **iterations + capacities + team days off** to compute a sprint capacity schedule
+- Provides ActionableAgile-style **How Many** and **When** forecasts
+- Downloads charts as **PNG or SVG** (Plotly + Kaleido)
+
+---
+
+## Ubuntu setup
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip unzip
+sudo apt install -y python3.12 python3.12-venv python3-pip
 ```
 
 ```bash
-unzip agile-montecarlo-streamlit-full-replacement.zip
-cd agile-montecarlo-streamlit-full-replacement
-python3 -m venv .venv
+git clone <repo-url>
+cd agileforecasting
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -U pip
+pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+---
+
+## Run locally
+
+```bash
+source .venv/bin/activate
 streamlit run streamlit_app/app.py
 ```
 
-## Azure DevOps details
+Open <http://localhost:8501> in your browser.
 
-In the app sidebar, enter:
-- Org, Project, Team
-- PAT
-- Saved Query URL or GUID (your "Done by date" query)
-- Passphrase (to encrypt and save these settings at rest)
+In the sidebar enter your Azure DevOps details:
 
-Notes:
-- The app stores encrypted settings in `~/.config/agile-montecarlo/ado_settings.enc.json`
-- The passphrase is **not** stored. Optionally set `MC_ADO_PASSPHRASE` env var.
+| Field | Description |
+|---|---|
+| Organisation | e.g. `myorg` |
+| Project | e.g. `MyProject` |
+| Team | e.g. `MyProject Team` |
+| PAT | Personal Access Token (see PAT scopes below) |
+| Saved Query URL or GUID | A "Done by date" query GUID or its full URL |
+| Passphrase | Encrypts settings on disk — not stored anywhere |
 
-## PAT scopes
+Settings are encrypted and saved to `~/.config/agile-montecarlo/ado_settings.enc.json`.
+Set `MC_ADO_PASSPHRASE` env var to avoid typing the passphrase on every start.
 
-You need read access to:
-- Work items + Queries (Boards)
-- Team settings / Iterations / Capacities (Work)
+### PAT scopes required
 
-If ADO endpoints fail, the app shows the HTTP status and message.
+- **Work Items → Read** (Boards)
+- **Work → Read** (Team Settings / Iterations / Capacities)
 
+---
+
+## Development setup
+
+Install the package in editable mode with dev dependencies (pytest, ruff):
+
+```bash
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### Run tests
+
+```bash
+pytest
+```
+
+### Lint
+
+```bash
+ruff check src/ tests/
+```
+
+---
+
+## Project structure
+
+```
+agileforecasting/
+├── src/agile_mc/          # Reusable domain logic (no Streamlit imports)
+│   ├── ado_client.py      # Azure DevOps REST client
+│   ├── ado_sync.py        # Throughput & capacity data fetching
+│   ├── simulation.py      # Monte Carlo simulation engine
+│   ├── plots.py           # Plotly chart builders
+│   ├── calendar_export.py # When-calendar Plotly figure
+│   ├── chart_export.py    # PNG/SVG export via Kaleido
+│   └── secure_store.py    # Encrypted settings storage
+├── streamlit_app/
+│   └── app.py             # Streamlit UI entrypoint
+├── tests/                 # Unit tests for src/agile_mc
+├── pyproject.toml         # Package metadata, tool config
+└── requirements.txt       # Pinned runtime dependencies
+```

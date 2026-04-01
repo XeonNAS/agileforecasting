@@ -14,7 +14,7 @@ venv/
 
 # Streamlit / local config
 .streamlit/secrets.toml
-.streamlit/config.toml
+# .streamlit/config.toml is committed — override via STREAMLIT_* env vars locally
 
 # Local env / secrets
 .env
@@ -40,6 +40,7 @@ dist/
 # Test / coverage
 .coverage
 htmlcov/
+junit*.xml
 
 # Generated exports
 *.png

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Optional
-
 import os
 import shutil
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import plotly.graph_objects as go
 
@@ -134,7 +133,6 @@ def _prepared_export_figure(fig: go.Figure, fmt: str) -> tuple[go.Figure, int, i
 
     scale = 2 if fmt == "png" else 1
     return export_fig, width, height, scale
-
 
 
 def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExportResult:

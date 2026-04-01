@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -56,8 +56,8 @@ def simulate_how_many_daily(
 class SprintPlanChunk:
     sprint_name: str
     sprint_num: Optional[int]
-    working_dates: List[dt.date]          # working dates in this chunk (team days off already removed)
-    capacity_factor: float                # planned / baseline capacity for the sprint
+    working_dates: List[dt.date]  # working dates in this chunk (team days off already removed)
+    capacity_factor: float  # planned / baseline capacity for the sprint
 
 
 def simulate_how_many_sprint(
@@ -137,3 +137,41 @@ def completion_cdf_by_date(completion_dates: List[dt.date], dates: List[dt.date]
     for d in dates:
         out.append(float(np.mean(comp <= d.toordinal())))
     return out
+
+
+def split_sample_counts(
+    total_samples: np.ndarray,
+    project_ratio: float,
+    seed: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split total completed items into project vs BAU using binomial sampling,
+    preserving the total for each simulation.
+    """
+    totals = np.asarray(total_samples, dtype=int)
+    ratio = min(max(float(project_ratio), 0.0), 1.0)
+    rng = np.random.default_rng(seed)
+    project = rng.binomial(totals, ratio)
+    bau = totals - project
+    return project.astype(int), bau.astype(int)
+
+
+def threshold_breakdown(
+    total_samples: np.ndarray,
+    project_samples: np.ndarray,
+    bau_samples: np.ndarray,
+    p: float,
+) -> tuple[int, int, int]:
+    """Return a consistent total/project/BAU triple at the 'at least p' threshold.
+    This keeps the breakdown additive for each confidence line.
+    """
+    if len(total_samples) == 0:
+        return 0, 0, 0
+    order = np.argsort(np.asarray(total_samples, dtype=int))
+    idx = int((1.0 - float(p)) * len(order))
+    idx = max(0, min(idx, len(order) - 1))
+    sel = order[idx]
+    return (
+        int(total_samples[sel]),
+        int(project_samples[sel]),
+        int(bau_samples[sel]),
+    )

@@ -105,11 +105,16 @@ def build_when_calendar_figure(
         4: "rgba(76, 175, 80, 0.35)",
     }
     colorscale = [
-        (0.00, colors[0]), (0.1999, colors[0]),
-        (0.20, colors[1]), (0.3999, colors[1]),
-        (0.40, colors[2]), (0.5999, colors[2]),
-        (0.60, colors[3]), (0.7999, colors[3]),
-        (0.80, colors[4]), (1.00, colors[4]),
+        (0.00, colors[0]),
+        (0.1999, colors[0]),
+        (0.20, colors[1]),
+        (0.3999, colors[1]),
+        (0.40, colors[2]),
+        (0.5999, colors[2]),
+        (0.60, colors[3]),
+        (0.7999, colors[3]),
+        (0.80, colors[4]),
+        (1.00, colors[4]),
     ]
 
     for idx_m, (yy, mm) in enumerate(months):

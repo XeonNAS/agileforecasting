@@ -1,27 +1,14 @@
 from __future__ import annotations
-import sys
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SRC = REPO_ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
-from agile_mc.calendar_export import build_when_calendar_figure
 
 import datetime as dt
 import json
 import os
 import re
-import sys
-from pathlib import Path
 from typing import Dict, List
-
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-
 
 from agile_mc.ado_client import AdoClient, AdoRef
 from agile_mc.ado_sync import (
@@ -31,15 +18,17 @@ from agile_mc.ado_sync import (
     fetch_sprints,
     weekday_indexes_from_team_settings,
 )
+from agile_mc.calendar_export import build_when_calendar_figure
 from agile_mc.chart_export import export_plotly_figure
 from agile_mc.plots import how_many_figures, when_figures
 from agile_mc.secure_store import forget as secure_forget
 from agile_mc.secure_store import load_encrypted, save_encrypted
 from agile_mc.simulation import (
-    at_least_threshold,
     completion_cdf_by_date,
     simulate_how_many_daily,
     simulate_when_daily,
+    split_sample_counts,
+    threshold_breakdown,
 )
 
 
@@ -53,47 +42,6 @@ def st_plotly(fig):
         st.plotly_chart(fig, use_container_width=True)
 
 
-def split_sample_counts(
-    total_samples: np.ndarray,
-    project_ratio: float,
-    seed: int | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Split total completed items into project vs BAU using binomial sampling,
-    preserving the total for each simulation.
-    """
-    totals = np.asarray(total_samples, dtype=int)
-    ratio = min(max(float(project_ratio), 0.0), 1.0)
-    rng = np.random.default_rng(seed)
-    project = rng.binomial(totals, ratio)
-    bau = totals - project
-    return project.astype(int), bau.astype(int)
-
-
-def threshold_breakdown(
-    total_samples: np.ndarray,
-    project_samples: np.ndarray,
-    bau_samples: np.ndarray,
-    p: float,
-) -> tuple[int, int, int]:
-    """
-    Return a consistent total/project/BAU sample for the 'at least p' threshold.
-    This keeps the breakdown additive for each confidence line.
-    """
-    if len(total_samples) == 0:
-        return 0, 0, 0
-
-    order = np.argsort(np.asarray(total_samples, dtype=int))
-    idx = int((1.0 - float(p)) * len(order))
-    idx = max(0, min(idx, len(order) - 1))
-    sel = order[idx]
-    return (
-        int(total_samples[sel]),
-        int(project_samples[sel]),
-        int(bau_samples[sel]),
-    )
-
-
 def df_to_wrapped_html(df: pd.DataFrame, max_rows: int = 500) -> str:
     if df is None or df.empty:
         return "<div class='mcwrap'><em>(empty)</em></div>"
@@ -105,7 +53,6 @@ def df_to_wrapped_html(df: pd.DataFrame, max_rows: int = 500) -> str:
 def render_df_expander(title: str, df: pd.DataFrame, expanded: bool = False):
     with st.expander(title, expanded=expanded):
         st.markdown(df_to_wrapped_html(df), unsafe_allow_html=True)
-
 
 
 def _to_date_series(series: pd.Series) -> pd.Series:
@@ -132,7 +79,11 @@ def filter_df_for_history_window(
         mask = dates.between(history_start, history_end)
         return out.loc[mask].reset_index(drop=True)
 
-    if title in {"Sprints (iterations)", "Sprint capacity schedule", "Derived sprint throughput (completed sprints only)"}:
+    if title in {
+        "Sprints (iterations)",
+        "Sprint capacity schedule",
+        "Derived sprint throughput (completed sprints only)",
+    }:
         if "end_date" in out.columns:
             end_dates = _to_date_series(out["end_date"])
             mask = end_dates >= history_start
@@ -271,7 +222,7 @@ def render_calendar_month_html(
         cur += dt.timedelta(days=1)
 
     return f"""<div class='mcmonth'>
-        <h3>{first.strftime('%B %Y')}</h3>
+        <h3>{first.strftime("%B %Y")}</h3>
         <div class='mccal'>{header}{cells}</div>
     </div>"""
 
@@ -382,7 +333,6 @@ with st.sidebar:
                             "done_field": st.session_state.get("cfg_done_field", "AUTO"),
                             "history_days": int(st.session_state.get("cfg_history_days", 180)),
                             "seed": st.session_state.get("cfg_seed", ""),
-                    "project_ratio": int(st.session_state.get("cfg_project_ratio", 80)),
                             "project_ratio": int(st.session_state.get("cfg_project_ratio", 80)),
                         },
                         st.session_state["cfg_passphrase"],
@@ -400,8 +350,8 @@ with st.sidebar:
 
     st.toggle("Auto-save on refresh", value=True, key="cfg_auto_save")
 
-    st.text_input("Org", value=st.session_state.get("cfg_org", "tribalgroup"), key="cfg_org")
-    st.text_input("Project", value=st.session_state.get("cfg_project", "EdgePlatform"), key="cfg_project")
+    st.text_input("Org", value=st.session_state.get("cfg_org", ""), key="cfg_org")
+    st.text_input("Project", value=st.session_state.get("cfg_project", ""), key="cfg_project")
     st.text_input("Team", value=st.session_state.get("cfg_team", ""), key="cfg_team")
     st.text_input("PAT", value=st.session_state.get("cfg_pat", ""), type="password", key="cfg_pat")
     st.text_input("Saved query URL or GUID", value=st.session_state.get("cfg_query", ""), key="cfg_query")
@@ -417,7 +367,14 @@ with st.sidebar:
         index=0,
         key="cfg_done_field",
     )
-    st.number_input("History days", min_value=30, max_value=730, value=int(st.session_state.get("cfg_history_days", 180)), step=30, key="cfg_history_days")
+    st.number_input(
+        "History days",
+        min_value=30,
+        max_value=730,
+        value=int(st.session_state.get("cfg_history_days", 180)),
+        step=30,
+        key="cfg_history_days",
+    )
 
     st.divider()
     st.header("Forecast settings")
@@ -439,7 +396,9 @@ with st.sidebar:
     st.date_input("Forecast start date", value=dt.date.today(), key="cfg_forecast_start")
 
     if st.session_state["cfg_mode"].startswith("How Many"):
-        st.date_input("Target date", value=st.session_state["cfg_forecast_start"] + dt.timedelta(days=14), key="cfg_target_date")
+        st.date_input(
+            "Target date", value=st.session_state["cfg_forecast_start"] + dt.timedelta(days=14), key="cfg_target_date"
+        )
     else:
         st.number_input("Items remaining", min_value=1, value=50, step=1, key="cfg_items_remaining")
 
@@ -501,7 +460,11 @@ if refresh or "ado_loaded" not in st.session_state:
         for sp in sprints:
             if sp.end_inclusive >= forecast_start:
                 continue
-            mask = (daily_df["date"] >= sp.start_date) & (daily_df["date"] <= sp.end_inclusive) & (daily_df["is_working_day"])
+            mask = (
+                (daily_df["date"] >= sp.start_date)
+                & (daily_df["date"] <= sp.end_inclusive)
+                & (daily_df["is_working_day"])
+            )
             done_sum = int(daily_df.loc[mask, "done_count"].sum()) if "done_count" in daily_df.columns else 0
             sprint_rows.append(
                 {
@@ -636,8 +599,12 @@ if mode.startswith("How Many"):
         f"By {timebox_label}, there is a 95% chance we will finish at least {n95} items "
         f"({p95_project} Project, {p95_bau} BAU)."
     )
-    st.markdown("Higher confidence means fewer items; lower confidence means more risk—choose the confidence level that fits the decision.")
-    st.markdown("The first chart below matches the forecast lines above: it shows the chance of finishing **at least** N items. The second chart shows the **exact** probability of landing on each total.")
+    st.markdown(
+        "Higher confidence means fewer items; lower confidence means more risk—choose the confidence level that fits the decision."
+    )
+    st.markdown(
+        "The first chart below matches the forecast lines above: it shows the chance of finishing **at least** N items. The second chart shows the **exact** probability of landing on each total."
+    )
 
     figs = how_many_figures(samples, project_samples=project_samples, bau_samples=bau_samples)
     st.divider()
@@ -650,27 +617,28 @@ if mode.startswith("How Many"):
     fmt = st.selectbox("Download format", ["png", "svg"], index=0, key="dl_fmt_hm")
     chart_name = st.selectbox("Chart", list(figs.keys()), index=0, key="dl_chart_hm")
     if st.button("Prepare download", key="dl_btn_hm"):
-        ex = export_plotly_figure(figs[chart_name], fmt=fmt, base_name=re.sub(r"[^A-Za-z0-9_-]+", "_", chart_name.lower()))
+        ex = export_plotly_figure(
+            figs[chart_name], fmt=fmt, base_name=re.sub(r"[^A-Za-z0-9_-]+", "_", chart_name.lower())
+        )
         st.download_button("Download", data=ex.data, file_name=ex.filename, mime=ex.mime, key="dl_real_hm")
 
     summary = {
         "forecast_type": "how_many",
         "timebox_label": timebox_label,
+        "target_date": target_date.isoformat(),
+        "forecast_start": forecast_start.isoformat(),
+        "basis": basis,
+        "simulations": int(n_sims),
+        "project_ratio": float(project_ratio),
         "n50": int(n50),
         "n85": int(n85),
         "n95": int(n95),
-        "project_ratio": float(project_ratio),
         "p50_project": int(p50_project),
         "p50_bau": int(p50_bau),
         "p85_project": int(p85_project),
         "p85_bau": int(p85_bau),
         "p95_project": int(p95_project),
         "p95_bau": int(p95_bau),
-        "simulations": int(n_sims),
-        "basis": basis,
-        "forecast_start": forecast_start.isoformat(),
-        "project_ratio": float(project_ratio),
-        "target_date": target_date.isoformat(),
     }
     st.download_button(
         "Download summary.json",
@@ -680,11 +648,15 @@ if mode.startswith("How Many"):
     )
     st.download_button(
         "Download samples.csv",
-        data=pd.DataFrame({
-            "items_completed": samples,
-            "project_items_completed": project_samples,
-            "bau_items_completed": bau_samples,
-        }).to_csv(index=False).encode("utf-8"),
+        data=pd.DataFrame(
+            {
+                "items_completed": samples,
+                "project_items_completed": project_samples,
+                "bau_items_completed": bau_samples,
+            }
+        )
+        .to_csv(index=False)
+        .encode("utf-8"),
         file_name="forecast_samples.csv",
         mime="text/csv",
     )
@@ -724,7 +696,7 @@ else:
     months_show = max(months_ui, months_p95)
 
     render_calendar(completion_dates, sprint_label_by_date, months_to_show=months_show, start_date=forecast_start)
-    
+
     st.divider()
     st.subheader("Download calendar")
     cal_fmt = st.selectbox("Download format", ["png", "svg"], index=0, key="dl_fmt_calendar")
@@ -796,7 +768,9 @@ else:
     )
     st.download_button(
         "Download completion_dates.csv",
-        data=pd.DataFrame({"completion_date": [d.isoformat() for d in completion_dates]}).to_csv(index=False).encode("utf-8"),
+        data=pd.DataFrame({"completion_date": [d.isoformat() for d in completion_dates]})
+        .to_csv(index=False)
+        .encode("utf-8"),
         file_name="completion_dates.csv",
         mime="text/csv",
     )

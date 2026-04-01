@@ -151,7 +151,9 @@ def fetch_capacities_for_sprint(ado: AdoClient, sprint: Sprint) -> Tuple[Dict[st
     return baseline, member_days_off
 
 
-def _select_iteration_team_summary(summary_payload: Dict[str, Any], baseline_per_day: float) -> Optional[Dict[str, Any]]:
+def _select_iteration_team_summary(
+    summary_payload: Dict[str, Any], baseline_per_day: float
+) -> Optional[Dict[str, Any]]:
     teams = summary_payload.get("teams")
     if not isinstance(teams, list):
         return None
@@ -214,6 +216,7 @@ def fetch_iteration_summary_days_off_count(ado: AdoClient, sprint: Sprint, basel
     except Exception:
         pass
     return None
+
 
 def build_capacity_schedule(
     ado: AdoClient,
@@ -343,18 +346,20 @@ def fetch_daily_throughput_from_saved_query(
     candidates: List[str] = []
     if done_date_field and done_date_field != "AUTO":
         candidates.append(done_date_field)
-    candidates.extend([
-        "Microsoft.VSTS.Common.ClosedDate",
-        "Microsoft.VSTS.Common.ResolvedDate",
-        "Microsoft.VSTS.Common.StateChangeDate",
-        "System.ChangedDate",
-    ])
+    candidates.extend(
+        [
+            "Microsoft.VSTS.Common.ClosedDate",
+            "Microsoft.VSTS.Common.ResolvedDate",
+            "Microsoft.VSTS.Common.StateChangeDate",
+            "System.ChangedDate",
+        ]
+    )
     fields = list(dict.fromkeys(candidates))
 
     done_dates: List[dt.date] = []
     chunk = 200
     for i in range(0, len(ids), chunk):
-        batch = ids[i:i + chunk]
+        batch = ids[i : i + chunk]
         payload = ado.work_items_batch(batch, fields=fields)
         items = payload.get("value") or []
         for it in items:
