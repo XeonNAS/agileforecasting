@@ -11,6 +11,11 @@ from plotly.subplots import make_subplots
 from .simulation import completion_cdf_by_date
 
 
+def _esc(text: str) -> str:
+    """Escape HTML special characters for Plotly annotation/text fields."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _month_last_day(year: int, month: int) -> dt.date:
     if month == 12:
         return dt.date(year + 1, 1, 1) - dt.timedelta(days=1)
@@ -140,7 +145,7 @@ def build_when_calendar_figure(
                 p = float(prob_by_date.get(d, 0.0))
                 z_row.append(_band_bucket(p))
                 pct = int(round(p * 100))
-                s_lbl = (sprint_label_by_date.get(d, "") or "").replace("Sprint ", "S")
+                s_lbl = _esc((sprint_label_by_date.get(d, "") or "").replace("Sprint ", "S"))
                 t_row.append(f"{day}<br>{pct}%<br>{s_lbl}")
             z.append(z_row)
             text.append(t_row)
@@ -209,7 +214,7 @@ def build_when_calendar_figure(
 
     # Global header + context
     fig.add_annotation(
-        text=f"<b>{title}</b>",
+        text=f"<b>{_esc(title)}</b>",
         x=0.5,
         y=1.95,
         xref="paper",
@@ -226,7 +231,7 @@ def build_when_calendar_figure(
 
     if context_lines:
         fig.add_annotation(
-            text="<br>".join([str(x) for x in context_lines if str(x).strip()]),
+            text="<br>".join([_esc(str(x)) for x in context_lines if str(x).strip()]),
             x=0.0,
             y=1.87,
             xref="paper",

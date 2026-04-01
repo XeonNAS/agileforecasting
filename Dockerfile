@@ -8,10 +8,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python package (separate layer so src/ changes don't invalidate pip cache)
+# Install pinned runtime dependencies first — separate layer so the slow
+# download step is cached as long as requirements.lock hasn't changed.
+COPY requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
+
+# Install the package itself (no dep resolution — everything is already installed)
 COPY pyproject.toml ./
 COPY src/ src/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 
 # Copy the Streamlit app and config
 COPY streamlit_app/ streamlit_app/
@@ -23,6 +28,10 @@ USER appuser
 
 # Tell Kaleido where Chromium is
 ENV BROWSER_PATH=/usr/bin/chromium
+# Bind to all interfaces inside the container so the mapped port is reachable
+# from the host. config.toml leaves address unset (defaults to localhost) so
+# this env var only takes effect in the container.
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 
 EXPOSE 8501
 

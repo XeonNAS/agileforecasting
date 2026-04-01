@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import json
+import math
 import os
 import re
 from typing import Dict, List
@@ -18,13 +20,13 @@ from agile_mc.ado_sync import (
     fetch_sprints,
     weekday_indexes_from_team_settings,
 )
+from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
 from agile_mc.chart_export import export_plotly_figure
 from agile_mc.plots import how_many_figures, when_figures
 from agile_mc.secure_store import forget as secure_forget
 from agile_mc.secure_store import load_encrypted, save_encrypted
 from agile_mc.simulation import (
-    completion_cdf_by_date,
     simulate_how_many_daily,
     simulate_when_daily,
     split_sample_counts,
@@ -42,17 +44,12 @@ def st_plotly(fig):
         st.plotly_chart(fig, use_container_width=True)
 
 
-def df_to_wrapped_html(df: pd.DataFrame, max_rows: int = 500) -> str:
-    if df is None or df.empty:
-        return "<div class='mcwrap'><em>(empty)</em></div>"
-    if len(df) > max_rows:
-        df = df.head(max_rows)
-    return f"<div class='mcwrap'>{df.to_html(index=False, escape=True)}</div>"
-
-
 def render_df_expander(title: str, df: pd.DataFrame, expanded: bool = False):
     with st.expander(title, expanded=expanded):
-        st.markdown(df_to_wrapped_html(df), unsafe_allow_html=True)
+        if df is None or df.empty:
+            st.caption("(empty)")
+        else:
+            st.dataframe(df, use_container_width=True)
 
 
 def _to_date_series(series: pd.Series) -> pd.Series:
@@ -98,179 +95,6 @@ def filter_df_for_history_window(
     return out
 
 
-def inject_css():
-    st.markdown(
-        """<style>
-        .block-container { padding-top: 1.1rem; padding-bottom: 1.2rem; }
-
-        /* wrapped html tables */
-        .mcwrap table { width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; }
-        .mcwrap th, .mcwrap td {
-            border: 1px solid rgba(49, 51, 63, 0.2);
-            padding: 6px 8px;
-            vertical-align: top;
-            white-space: normal !important;
-            word-break: break-word !important;
-            overflow-wrap: anywhere !important;
-        }
-        .mcwrap th { font-weight: 600; }
-
-        /* Calendar layout: 4 months across, compact tiles */
-        .mcmonths {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(200px, 1fr));
-          gap: 12px;
-          align-items: start;
-        }
-        @media (max-width: 1200px) {
-          .mcmonths { grid-template-columns: repeat(3, minmax(190px, 1fr)); }
-        }
-        @media (max-width: 900px) {
-          .mcmonths { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
-        }
-        @media (max-width: 650px) {
-          .mcmonths { grid-template-columns: 1fr; }
-        }
-
-        .mcmonth {
-          border: 1px solid rgba(49,51,63,0.18);
-          border-radius: 10px;
-          padding: 8px 8px 10px 8px;
-        }
-        .mcmonth h3 {
-          margin: 2px 2px 8px 2px;
-          font-size: 16px;
-        }
-
-        /* Day grid inside a month */
-        .mccal {
-          display: grid;
-          grid-template-columns: repeat(7, 1fr);
-          gap: 4px;
-        }
-        .mccal .hdr {
-          font-weight: 600;
-          text-align: center;
-          opacity: 0.9;
-          font-size: 11px;
-        }
-        .mccell {
-          border: 1px solid rgba(49, 51, 63, 0.20);
-          border-radius: 9px;
-          padding: 5px 5px;
-          min-height: 46px;
-        }
-        .mccell .d { font-size: 11px; font-weight: 800; line-height: 1.05; }
-        .mccell .p { font-size: 11px; margin-top: 3px; font-weight: 800; line-height: 1.05; }
-        .mccell .s { font-size: 9px; margin-top: 3px; opacity: 0.95; line-height: 1.05; }
-
-        .mclegend { display:flex; gap:10px; flex-wrap:wrap; margin: 8px 0 12px 0; }
-        .mcchip { display:inline-flex; align-items:center; gap:8px; border:1px solid rgba(49,51,63,0.25); border-radius:999px; padding:4px 10px; font-size:12px; }
-        .mcswatch { width:14px; height:14px; border-radius:3px; border:1px solid rgba(0,0,0,0.15); }
-        </style>""",
-        unsafe_allow_html=True,
-    )
-
-
-def band_color(p: float) -> str:
-    if p >= 0.95:
-        return "rgba(76, 175, 80, 0.35)"
-    if p >= 0.85:
-        return "rgba(139, 195, 74, 0.35)"
-    if p >= 0.70:
-        return "rgba(255, 193, 7, 0.35)"
-    if p >= 0.50:
-        return "rgba(244, 67, 54, 0.30)"
-    return "rgba(158, 158, 158, 0.15)"
-
-
-def _month_last_day(year: int, month: int) -> dt.date:
-    if month == 12:
-        return dt.date(year + 1, 1, 1) - dt.timedelta(days=1)
-    return dt.date(year, month + 1, 1) - dt.timedelta(days=1)
-
-
-def render_calendar_month_html(
-    year: int,
-    month: int,
-    prob_by_date: Dict[dt.date, float],
-    sprint_label_by_date: Dict[dt.date, str],
-) -> str:
-    first = dt.date(year, month, 1)
-    last = _month_last_day(year, month)
-
-    dow = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    header = "".join([f"<div class='hdr'>{d}</div>" for d in dow])
-
-    pad = first.weekday()  # Mon=0
-    cells = ""
-    for _ in range(pad):
-        cells += "<div></div>"
-
-    cur = first
-    while cur <= last:
-        p = float(prob_by_date.get(cur, 0.0))
-        bg = band_color(p)
-        pct = int(round(p * 100))
-        sprint_lbl = sprint_label_by_date.get(cur, "")
-        sprint_lbl = sprint_lbl.replace("Sprint ", "S")
-        cells += f"""<div class='mccell' style='background:{bg}'>
-            <div class='d'>{cur.day}</div>
-            <div class='p'>{pct}%</div>
-            <div class='s'>{sprint_lbl}</div>
-        </div>"""
-        cur += dt.timedelta(days=1)
-
-    return f"""<div class='mcmonth'>
-        <h3>{first.strftime("%B %Y")}</h3>
-        <div class='mccal'>{header}{cells}</div>
-    </div>"""
-
-
-def render_calendar(
-    completion_dates: List[dt.date],
-    sprint_label_by_date: Dict[dt.date, str],
-    months_to_show: int,
-    start_date: dt.date,
-):
-    if not completion_dates:
-        st.info("No completion dates were generated.")
-        return
-
-    anchor = dt.date(start_date.year, start_date.month, 1)
-    months: List[tuple[int, int]] = []
-    y, m = anchor.year, anchor.month
-    for _ in range(months_to_show):
-        months.append((y, m))
-        m += 1
-        if m == 13:
-            y += 1
-            m = 1
-
-    first_day = dt.date(months[0][0], months[0][1], 1)
-    last_day = _month_last_day(months[-1][0], months[-1][1])
-
-    axis = [first_day + dt.timedelta(days=i) for i in range((last_day - first_day).days + 1)]
-    probs = completion_cdf_by_date(completion_dates, axis)
-    prob_by_date = {d: p for d, p in zip(axis, probs)}
-
-    st.markdown(
-        """<div class='mclegend'>
-            <span class='mcchip'><span class='mcswatch' style='background:rgba(76,175,80,0.35)'></span>95%+</span>
-            <span class='mcchip'><span class='mcswatch' style='background:rgba(139,195,74,0.35)'></span>85–95%</span>
-            <span class='mcchip'><span class='mcswatch' style='background:rgba(255,193,7,0.35)'></span>70–85%</span>
-            <span class='mcchip'><span class='mcswatch' style='background:rgba(244,67,54,0.30)'></span>50–70%</span>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    html = "<div class='mcmonths'>"
-    for y, m in months:
-        html += render_calendar_month_html(y, m, prob_by_date, sprint_label_by_date)
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
-
-
 def months_needed_to_cover_p95(completion_dates: List[dt.date], start_date: dt.date, cap: int = 24) -> int:
     """Number of months (from start_date month) needed to include the P95 completion month."""
     if not completion_dates:
@@ -290,13 +114,34 @@ def months_needed_to_cover_p95(completion_dates: List[dt.date], start_date: dt.d
 
 
 st.set_page_config(page_title="Agile Monte Carlo (ADO-first)", layout="wide")
-inject_css()
+
+# ---- App-level password gate (optional — set MC_APP_PASSWORD to enable)
+_app_password = get_app_password()
+if _app_password is not None and not st.session_state.get("_authenticated"):
+    st.title("Agile Monte Carlo")
+    st.caption("Sign in to continue.")
+    with st.form("login"):
+        _entered = st.text_input("Password", type="password")
+        _submitted = st.form_submit_button("Sign in")
+    if _submitted:
+        if hmac.compare_digest(_entered, _app_password):
+            st.session_state["_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+    st.stop()
 
 st.title("Agile Monte Carlo (Azure DevOps)")
 st.caption("Monte Carlo forecasts based on Azure DevOps throughput and iteration capacity.")
 
 # ---- Sidebar
 with st.sidebar:
+    if _app_password is not None:
+        if st.button("Sign out", key="btn_sign_out"):
+            st.session_state["_authenticated"] = False
+            st.rerun()
+        st.divider()
+
     st.header("Azure DevOps settings")
 
     env_pass = os.environ.get("MC_ADO_PASSPHRASE", "")
@@ -310,6 +155,7 @@ with st.sidebar:
             else:
                 try:
                     data = load_encrypted(st.session_state["cfg_passphrase"]) or {}
+                    data.pop("pat", None)  # PAT is no longer saved; discard if present in older files
                     for k, v in data.items():
                         st.session_state[f"cfg_{k}"] = v
                     st.success("Loaded saved settings.")
@@ -328,7 +174,6 @@ with st.sidebar:
                             "org": st.session_state.get("cfg_org", ""),
                             "project": st.session_state.get("cfg_project", ""),
                             "team": st.session_state.get("cfg_team", ""),
-                            "pat": st.session_state.get("cfg_pat", ""),
                             "query": st.session_state.get("cfg_query", ""),
                             "done_field": st.session_state.get("cfg_done_field", "AUTO"),
                             "history_days": int(st.session_state.get("cfg_history_days", 180)),
@@ -337,7 +182,7 @@ with st.sidebar:
                         },
                         st.session_state["cfg_passphrase"],
                     )
-                    st.success("Saved settings (encrypted).")
+                    st.success("Saved settings (encrypted). PAT is never saved.")
                 except Exception as e:
                     st.error(f"Could not save: {e}")
 
@@ -350,31 +195,37 @@ with st.sidebar:
 
     st.toggle("Auto-save on refresh", value=True, key="cfg_auto_save")
 
-    st.text_input("Org", value=st.session_state.get("cfg_org", ""), key="cfg_org")
-    st.text_input("Project", value=st.session_state.get("cfg_project", ""), key="cfg_project")
-    st.text_input("Team", value=st.session_state.get("cfg_team", ""), key="cfg_team")
-    st.text_input("PAT", value=st.session_state.get("cfg_pat", ""), type="password", key="cfg_pat")
-    st.text_input("Saved query URL or GUID", value=st.session_state.get("cfg_query", ""), key="cfg_query")
-    st.selectbox(
-        "Done date field",
-        options=[
-            "AUTO",
-            "Microsoft.VSTS.Common.ClosedDate",
-            "Microsoft.VSTS.Common.ResolvedDate",
-            "Microsoft.VSTS.Common.StateChangeDate",
-            "System.ChangedDate",
-        ],
-        index=0,
-        key="cfg_done_field",
-    )
-    st.number_input(
-        "History days",
-        min_value=30,
-        max_value=730,
-        value=int(st.session_state.get("cfg_history_days", 180)),
-        step=30,
-        key="cfg_history_days",
-    )
+    st.divider()
+    st.subheader("Connect to Azure DevOps")
+    st.caption("Enter your PAT each time you refresh. It is never saved to disk.")
+
+    with st.form("ado_connection"):
+        st.text_input("Org", value=st.session_state.get("cfg_org", ""), key="cfg_org")
+        st.text_input("Project", value=st.session_state.get("cfg_project", ""), key="cfg_project")
+        st.text_input("Team", value=st.session_state.get("cfg_team", ""), key="cfg_team")
+        st.text_input("PAT", type="password", key="cfg_pat")
+        st.text_input("Saved query URL or GUID", value=st.session_state.get("cfg_query", ""), key="cfg_query")
+        st.selectbox(
+            "Done date field",
+            options=[
+                "AUTO",
+                "Microsoft.VSTS.Common.ClosedDate",
+                "Microsoft.VSTS.Common.ResolvedDate",
+                "Microsoft.VSTS.Common.StateChangeDate",
+                "System.ChangedDate",
+            ],
+            index=0,
+            key="cfg_done_field",
+        )
+        st.number_input(
+            "History days",
+            min_value=30,
+            max_value=730,
+            value=int(st.session_state.get("cfg_history_days", 180)),
+            step=30,
+            key="cfg_history_days",
+        )
+        refresh = st.form_submit_button("Refresh from Azure DevOps", type="primary")
 
     st.divider()
     st.header("Forecast settings")
@@ -404,20 +255,12 @@ with st.sidebar:
 
     st.slider("Calendar months to show (When)", min_value=1, max_value=24, value=3, key="cfg_months")
 
-    refresh = st.button("Refresh from Azure DevOps", type="primary", key="btn_refresh")
-
-# ---- Validate inputs
+# ---- Read connection inputs (PAT read here; cleared after successful fetch)
 org = st.session_state.get("cfg_org", "").strip()
 project = st.session_state.get("cfg_project", "").strip()
 team = st.session_state.get("cfg_team", "").strip()
 pat = st.session_state.get("cfg_pat", "").strip()
 query = st.session_state.get("cfg_query", "").strip()
-
-if not (org and project and team and pat and query):
-    st.info("Enter Org/Project/Team/PAT and saved query, then click **Refresh from Azure DevOps**.")
-    st.stop()
-
-ado = AdoClient(AdoRef(org, project, team), pat)
 
 forecast_start: dt.date = st.session_state["cfg_forecast_start"]
 history_days: int = int(st.session_state["cfg_history_days"])
@@ -425,92 +268,107 @@ done_field: str = st.session_state.get("cfg_done_field", "AUTO")
 auto_save: bool = bool(st.session_state.get("cfg_auto_save", True))
 passphrase2: str = st.session_state.get("cfg_passphrase", "")
 
-if refresh or "ado_loaded" not in st.session_state:
-    try:
-        team_settings = ado.get_team_settings()
-        working_days = team_settings.get("workingDays") or ["monday", "tuesday", "wednesday", "thursday", "friday"]
-        working_weekdays = weekday_indexes_from_team_settings(list(working_days))
+data_already_loaded = "ado_loaded" in st.session_state
 
-        sprints = fetch_sprints(ado)
-        sprints_df, capacity_df, per_date_ratio = build_capacity_schedule(ado, sprints, working_weekdays)
+if refresh:
+    if not (org and project and team and pat and query):
+        st.warning("All connection fields — including PAT — are required to refresh.")
+        if not data_already_loaded:
+            st.stop()
+    else:
+        try:
+            ado = AdoClient(AdoRef(org, project, team), pat)
+            team_settings = ado.get_team_settings()
+            working_days = team_settings.get("workingDays") or ["monday", "tuesday", "wednesday", "thursday", "friday"]
+            working_weekdays = weekday_indexes_from_team_settings(list(working_days))
 
-        team_days_off_all: set = set()
-        if not capacity_df.empty and "team_days_off_dates" in capacity_df.columns:
-            for dates_str in capacity_df["team_days_off_dates"].fillna("").tolist():
-                for part in [p.strip() for p in str(dates_str).split(",") if p.strip()]:
-                    try:
-                        team_days_off_all.add(dt.date.fromisoformat(part))
-                    except Exception:
-                        pass
+            sprints = fetch_sprints(ado)
+            sprints_df, capacity_df, per_date_ratio = build_capacity_schedule(ado, sprints, working_weekdays)
 
-        history_end = forecast_start - dt.timedelta(days=1)
-        history_start = history_end - dt.timedelta(days=history_days)
+            team_days_off_all: set = set()
+            if not capacity_df.empty and "team_days_off_dates" in capacity_df.columns:
+                for dates_str in capacity_df["team_days_off_dates"].fillna("").tolist():
+                    for part in [p.strip() for p in str(dates_str).split(",") if p.strip()]:
+                        try:
+                            team_days_off_all.add(dt.date.fromisoformat(part))
+                        except Exception:
+                            pass
 
-        daily_df = fetch_daily_throughput_from_saved_query(
-            ado=ado,
-            saved_query_url_or_guid=query,
-            history_start=history_start,
-            history_end=history_end,
-            working_weekdays=working_weekdays,
-            team_days_off_all=team_days_off_all,
-            done_date_field=done_field,
-        )
+            history_end = forecast_start - dt.timedelta(days=1)
+            history_start = history_end - dt.timedelta(days=history_days)
 
-        sprint_rows = []
-        for sp in sprints:
-            if sp.end_inclusive >= forecast_start:
-                continue
-            mask = (
-                (daily_df["date"] >= sp.start_date)
-                & (daily_df["date"] <= sp.end_inclusive)
-                & (daily_df["is_working_day"])
-            )
-            done_sum = int(daily_df.loc[mask, "done_count"].sum()) if "done_count" in daily_df.columns else 0
-            sprint_rows.append(
-                {
-                    "iteration_id": sp.iteration_id,
-                    "sprint_name": sp.name,
-                    "sprint_num": extract_sprint_number(sp.name),
-                    "start_date": sp.start_date,
-                    "end_date": sp.end_inclusive,
-                    "done_count": done_sum,
-                }
-            )
-        sprint_throughput_df = (
-            pd.DataFrame(sprint_rows).sort_values(["start_date", "sprint_name"])
-            if sprint_rows
-            else pd.DataFrame(columns=["iteration_id", "sprint_name", "start_date", "end_date", "done_count"])
-        )
-
-        st.session_state["ado_loaded"] = True
-        st.session_state["working_weekdays"] = working_weekdays
-        st.session_state["sprints"] = sprints
-        st.session_state["ado_sprints_df"] = sprints_df
-        st.session_state["ado_capacity_df"] = capacity_df
-        st.session_state["ado_daily_df"] = daily_df
-        st.session_state["ado_sprint_throughput_df"] = sprint_throughput_df
-        st.session_state["per_date_ratio"] = per_date_ratio
-        st.session_state["ado_loaded_history_start"] = history_start
-        st.session_state["ado_loaded_history_end"] = history_end
-
-        if auto_save and passphrase2:
-            save_encrypted(
-                {
-                    "org": org,
-                    "project": project,
-                    "team": team,
-                    "pat": pat,
-                    "query": query,
-                    "done_field": done_field,
-                    "history_days": history_days,
-                    "seed": st.session_state.get("cfg_seed", ""),
-                },
-                passphrase2,
+            daily_df = fetch_daily_throughput_from_saved_query(
+                ado=ado,
+                saved_query_url_or_guid=query,
+                history_start=history_start,
+                history_end=history_end,
+                working_weekdays=working_weekdays,
+                team_days_off_all=team_days_off_all,
+                done_date_field=done_field,
             )
 
-    except Exception as e:
-        st.error(f"ADO sync failed: {e}")
-        st.stop()
+            sprint_rows = []
+            for sp in sprints:
+                if sp.end_inclusive >= forecast_start:
+                    continue
+                mask = (
+                    (daily_df["date"] >= sp.start_date)
+                    & (daily_df["date"] <= sp.end_inclusive)
+                    & (daily_df["is_working_day"])
+                )
+                done_sum = int(daily_df.loc[mask, "done_count"].sum()) if "done_count" in daily_df.columns else 0
+                sprint_rows.append(
+                    {
+                        "iteration_id": sp.iteration_id,
+                        "sprint_name": sp.name,
+                        "sprint_num": extract_sprint_number(sp.name),
+                        "start_date": sp.start_date,
+                        "end_date": sp.end_inclusive,
+                        "done_count": done_sum,
+                    }
+                )
+            sprint_throughput_df = (
+                pd.DataFrame(sprint_rows).sort_values(["start_date", "sprint_name"])
+                if sprint_rows
+                else pd.DataFrame(columns=["iteration_id", "sprint_name", "start_date", "end_date", "done_count"])
+            )
+
+            st.session_state["ado_loaded"] = True
+            st.session_state["working_weekdays"] = working_weekdays
+            st.session_state["sprints"] = sprints
+            st.session_state["ado_sprints_df"] = sprints_df
+            st.session_state["ado_capacity_df"] = capacity_df
+            st.session_state["ado_daily_df"] = daily_df
+            st.session_state["ado_sprint_throughput_df"] = sprint_throughput_df
+            st.session_state["per_date_ratio"] = per_date_ratio
+            st.session_state["ado_loaded_history_start"] = history_start
+            st.session_state["ado_loaded_history_end"] = history_end
+
+            if auto_save and passphrase2:
+                save_encrypted(
+                    {
+                        "org": org,
+                        "project": project,
+                        "team": team,
+                        "query": query,
+                        "done_field": done_field,
+                        "history_days": history_days,
+                        "seed": st.session_state.get("cfg_seed", ""),
+                    },
+                    passphrase2,
+                )
+
+            # Discard the PAT — it is not needed after the fetch completes
+            st.session_state["cfg_pat"] = ""
+
+        except Exception as e:
+            st.error(f"ADO sync failed: {e}")
+            if not data_already_loaded:
+                st.stop()
+
+elif not data_already_loaded:
+    st.info("Enter Org/Project/Team/PAT and saved query, then click **Refresh from Azure DevOps**.")
+    st.stop()
 
 display_history_end = forecast_start - dt.timedelta(days=1)
 display_history_start = display_history_end - dt.timedelta(days=history_days)
@@ -695,7 +553,23 @@ else:
     months_p95 = months_needed_to_cover_p95(completion_dates, forecast_start, cap=24)
     months_show = max(months_ui, months_p95)
 
-    render_calendar(completion_dates, sprint_label_by_date, months_to_show=months_show, start_date=forecast_start)
+    if not completion_dates:
+        st.info("No completion dates were generated.")
+    else:
+        cols_screen = 3
+        rows_screen = math.ceil(months_show / cols_screen)
+        cal_fig = build_when_calendar_figure(
+            completion_dates=completion_dates,
+            sprint_label_by_date=sprint_label_by_date,
+            months_to_show=months_show,
+            start_date=forecast_start,
+            cols=cols_screen,
+        )
+        cal_fig.update_layout(
+            margin=dict(l=10, r=10, t=60, b=10),
+            height=320 * rows_screen + 80,
+        )
+        st_plotly(cal_fig)
 
     st.divider()
     st.subheader("Download calendar")

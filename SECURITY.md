@@ -8,32 +8,48 @@ This document summarises the security posture of the app and known risks to addr
 
 | Area | What's in place |
 |---|---|
-| ADO credentials | Stored encrypted on disk with PBKDF2-derived Fernet key; passphrase never written to disk |
-| Secrets in session | PAT lives only in `st.session_state`; never logged or serialised to files |
-| HTML rendering | `unsafe_allow_html=True` is used for calendar and table rendering (see below) |
+| PAT lifetime | Entered in a sidebar form; **cleared from `st.session_state` immediately after a successful ADO sync**. Never written to the encrypted settings file. |
+| Non-secret settings | Org, project, team, query stored encrypted on disk with PBKDF2-derived Fernet key; passphrase never written to disk. |
+| HTML rendering | `unsafe_allow_html=True` is no longer used; tables use `st.dataframe`, calendar uses Plotly heatmap |
+| App password gate | Optional `MC_APP_PASSWORD` env var blocks all content behind a login form; uses `hmac.compare_digest`; stores only `_authenticated` boolean in session state |
+| Bind address | Local `streamlit run` binds to `localhost` only (`.streamlit/config.toml` leaves `address` unset); Docker overrides to `0.0.0.0` via `STREAMLIT_SERVER_ADDRESS` env var |
+| Streamlit production settings | `headless = true`, `fileWatcherType = "none"`, `gatherUsageStats = false` set in `.streamlit/config.toml` |
 | Environment variables | `.env.example` documents all env vars; `.gitignore` excludes `.env` and `secrets.toml` |
 
 ---
 
 ## Known risks — prioritised
 
-### 1. PAT logged via `st.session_state` introspection (medium)
-Streamlit's debug tools and exception tracebacks can expose `st.session_state`,
-which contains the raw PAT string while the session is active. **Mitigation:** run
-behind a private network or authenticated reverse proxy; avoid exposing the debug
-port (8501) publicly.
+### 1. PAT in session state during the fetch (low — window now minimised)
+The PAT exists in `st.session_state["cfg_pat"]` only during the render cycle in
+which the form is submitted and the ADO sync runs. It is set to `""` on success.
+On error the PAT is retained so the user can retry without re-entering it, but the
+error message never includes the PAT value. **Residual risk:** a crash dump or
+Streamlit debug session opened during that one render could capture the PAT.
+**Mitigation:** run behind a private network or authenticated reverse proxy.
 
-### 2. `unsafe_allow_html=True` (low in current form, watch on change)
-The calendar and table HTML is generated entirely from internal data (no user text
-is injected into the markup). **Risk:** if sprint names or ADO field values are ever
-interpolated directly into the HTML template they must be escaped first. The current
-code does not do this interpolation, but future changes should be audited.
+### 2. ~~`unsafe_allow_html=True`~~ (resolved)
+`unsafe_allow_html=True` has been removed from the app. Tables now use
+`st.dataframe` and the on-screen calendar uses the existing Plotly heatmap
+(`build_when_calendar_figure`). ADO-derived text (sprint names, org/project/team)
+that flows into Plotly annotation and text fields is escaped via a dedicated
+`_esc()` helper in `calendar_export.py`.
 
-### 3. No authentication layer (high for shared deployment)
-The app has no login. Anyone who can reach the URL can enter credentials and query
-any ADO organisation they have a PAT for. **Mitigation:** deploy behind an
+### 3. Authentication layer (low for shared team use; high for public deployment)
+A shared-password gate is now implemented via the `MC_APP_PASSWORD` environment
+variable. When set, all app content is blocked behind a login form and a
+`_authenticated` boolean is stored in session state. A Sign-out button is shown
+in the sidebar. The comparison uses `hmac.compare_digest` to avoid timing attacks.
+
+**Limitations of this gate:**
+- It is a shared secret, not per-user authentication. Anyone with the password can use the app.
+- It provides no audit trail, rate limiting, or brute-force protection.
+- Session state is per-browser tab; another tab in the same browser is a fresh session.
+
+**Recommendation for public or regulated deployments:** place the app behind an
 authenticating reverse proxy (nginx + OAuth2 Proxy, Azure AD App Proxy, Cloudflare
-Access) or restrict network access to the team.
+Access) in addition to, or instead of, this gate. Network-level access control
+(VPN, private subnet) remains the strongest mitigation.
 
 ### 4. Encrypted settings file readable by OS user (low)
 `~/.config/agile-montecarlo/ado_settings.enc.json` is created with mode `0o600`
@@ -49,19 +65,24 @@ to Work Items (Read) and Work (Read) only. See README for the exact scopes.
 to the working directory. It no longer runs, but if re-activated, the log contains
 URL paths (not credentials). Add `*.log` to `.gitignore` (already present).
 
-### 7. Dependency pinning (informational)
-`requirements.txt` uses `>=` lower bounds. For a production deployment, generate a
-pinned lockfile with `pip-compile` (pip-tools) or `uv pip compile` and test against
-it in CI before deploying.
+### 7. Dependency pinning (resolved)
+`requirements.lock` pins every transitive runtime dependency to an exact version,
+generated by `pip-compile` from `pyproject.toml`. Docker installs from
+`requirements.lock`. CI installs from `requirements.lock` before running tests.
+Regenerate with `pip-compile pyproject.toml --output-file requirements.lock`
+whenever `pyproject.toml` changes.
 
 ---
 
 ## Recommended pre-production actions
 
-- [ ] Place app behind an authenticated reverse proxy or restrict network access
-- [ ] Generate a pinned requirements lockfile (`pip-compile pyproject.toml`)
+- [x] Add shared-password gate (`MC_APP_PASSWORD`) for lightweight internal deployments
+- [ ] Place app behind an authenticated reverse proxy or restrict network access (required for public deployments)
+- [x] Generate a pinned requirements lockfile (`requirements.lock` via `pip-compile`)
 - [ ] Review sprint name / ADO value interpolation before any HTML template changes
-- [ ] Set `STREAMLIT_SERVER_HEADLESS=true` and `STREAMLIT_SERVER_FILE_WATCHER_TYPE=none` in production (both covered by `.streamlit/config.toml`)
+- [x] Set `headless = true`, `fileWatcherType = "none"`, `gatherUsageStats = false` in `.streamlit/config.toml`
+- [x] Local `streamlit run` defaults to `localhost`; Docker binds `0.0.0.0` via `STREAMLIT_SERVER_ADDRESS` env var
+- [x] PAT least-privilege scopes documented in README (Work Items: Read, Work: Read)
 - [ ] Rotate the PAT used in testing before first production use
 
 ---

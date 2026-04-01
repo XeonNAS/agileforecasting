@@ -1,7 +1,10 @@
 [server]
 headless = true
-address = "0.0.0.0"
 port = 8501
+# address is intentionally unset here so local `streamlit run` binds to
+# localhost only. Container deployments override this via the
+# STREAMLIT_SERVER_ADDRESS environment variable (see Dockerfile).
+fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false
