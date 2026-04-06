@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path.cwd()
-OUT = ROOT / 'repo_snapshot_for_chatgpt.zip'
+OUT = ROOT / 'repo_snapshot.zip'
 
 INCLUDE_EXTS = {
     '.py', '.toml', '.yaml', '.yml', '.json', '.md', '.txt', '.ini', '.cfg', '.env.example'

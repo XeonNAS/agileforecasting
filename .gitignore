@@ -28,6 +28,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# AI coding assistant local settings (machine-specific, not for version control)
+.claude/
+
 # Build / packaging
 build/
 dist/
