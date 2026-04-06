@@ -10,6 +10,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.1] — 2026-04-06
+
+### Fixed
+- Chart export no longer crashes with a raw traceback when Chrome/Chromium is not
+  installed. `export_plotly_figure()` now raises `BrowserNotAvailableError` with
+  installation guidance, and all three export buttons in the UI show a clean error
+  message instead of an unhandled exception.
+- Removed an accidental call to `plotly.io.get_chrome()` in `ensure_plotly_chrome()`.
+  In Plotly 6.x that function downloads Chrome from Google CDN rather than locating
+  an existing binary, which was unintended silent behaviour.
+
+---
+
 ## [0.1.0] — 2026-04-06
 
 First public release. The app was originally delivered as a zip with one-off patch
