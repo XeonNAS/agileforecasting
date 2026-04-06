@@ -199,6 +199,13 @@ with st.sidebar:
     st.subheader("Connect to Azure DevOps")
     st.caption("Enter your PAT each time you refresh. It is never saved to disk.")
 
+    # Deferred PAT clear: applied here, before the widget that owns cfg_pat is
+    # instantiated, so Streamlit allows the write.  The flag is set by the
+    # post-sync cleanup block below (which runs after widget creation and
+    # therefore cannot write directly).
+    if st.session_state.pop("_clear_pat_on_next_run", False):
+        st.session_state["cfg_pat"] = ""
+
     with st.form("ado_connection"):
         st.text_input("Org", value=st.session_state.get("cfg_org", ""), key="cfg_org")
         st.text_input("Project", value=st.session_state.get("cfg_project", ""), key="cfg_project")
@@ -358,8 +365,12 @@ if refresh:
                     passphrase2,
                 )
 
-            # Discard the PAT — it is not needed after the fetch completes
-            st.session_state["cfg_pat"] = ""
+            # Discard the PAT on the next rerun.  We cannot write to cfg_pat
+            # here because the widget that owns that key was already instantiated
+            # earlier in this run (line ~206).  Setting the flag instead lets
+            # the deferred-clear block (above the form) wipe the key before
+            # the widget is created on the following rerun.
+            st.session_state["_clear_pat_on_next_run"] = True
 
         except Exception as e:
             st.error(f"ADO sync failed: {e}")
