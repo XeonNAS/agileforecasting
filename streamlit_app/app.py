@@ -248,7 +248,18 @@ with st.sidebar:
         st.text_input("Project", value=st.session_state.get("cfg_project", ""), key="cfg_project")
         st.text_input("Team", value=st.session_state.get("cfg_team", ""), key="cfg_team")
         st.text_input("PAT", type="password", key="cfg_pat")
-        st.text_input("Saved query URL or GUID", value=st.session_state.get("cfg_query", ""), key="cfg_query")
+        st.text_input(
+            "Query",
+            value=st.session_state.get("cfg_query", ""),
+            key="cfg_query",
+            placeholder="https://dev.azure.com/{org}/{project}/_queries/query/{id}/",
+            help=(
+                "Enter the URL of a saved Azure DevOps query that returns the team's completed work items "
+                "for the timeframe you want to analyse. "
+                "The query should only include items with **State = Done** and a **State Changed Date** within that period. "
+                "Make sure the query shows these columns: **ID, Work Item Type, Title, State, and State Changed Date**."
+            ),
+        )
         st.selectbox(
             "Done date field",
             options=[
@@ -316,7 +327,7 @@ data_already_loaded = "ado_loaded" in st.session_state
 
 if refresh:
     if not (org and project and team and pat and query):
-        st.warning("All connection fields — including PAT — are required to refresh.")
+        st.warning("All connection fields — including PAT and a saved query URL — are required to refresh.")
         if not data_already_loaded:
             st.stop()
     else:
@@ -426,7 +437,7 @@ if refresh:
                 st.stop()
 
 elif not data_already_loaded:
-    st.info("Enter Org/Project/Team/PAT and saved query, then click **Refresh from Azure DevOps**.")
+    st.info("Enter your Org, Project, Team, PAT, and a saved query URL, then click **Refresh from Azure DevOps**.")
     st.stop()
 
 display_history_end = forecast_start - dt.timedelta(days=1)
