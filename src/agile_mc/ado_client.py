@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import base64
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,10 +43,14 @@ class AdoClient:
         url = self._url(path)
 
         for attempt in range(5):
+            _t = time.perf_counter()
             r = self.session.request(method, url, params=params, json=json_body, timeout=self.timeout_s)
+            elapsed_ms = (time.perf_counter() - _t) * 1000
             if r.status_code == 429:
+                logger.debug("ADO %s %s → 429 (%.0fms) retry %d", method, path, elapsed_ms, attempt + 1)
                 time.sleep(1.0 + attempt)
                 continue
+            logger.debug("ADO %s %s → %d (%.0fms)", method, path, r.status_code, elapsed_ms)
             if r.status_code >= 400:
                 try:
                     msg = r.json()

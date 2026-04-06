@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
-from dataclasses import dataclass
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import pandas as pd
 
 from .ado_client import AdoClient
+
+logger = logging.getLogger(__name__)
+
+# Conservative parallelism limit: enough to overlap round-trips without
+# risking ADO rate-limiting (HTTP 429).  The bottleneck is network latency
+# per sprint (3 calls × ~200–500 ms each), so even 4 workers gives a large
+# speedup on typical team sizes of 10–30 sprints.
+_ADO_MAX_WORKERS = 4
+
+
+# ---------------------------------------------------------------------------
+# Pure utility functions
+# ---------------------------------------------------------------------------
 
 
 def parse_ado_dt(s: Optional[str]) -> Optional[dt.datetime]:
@@ -67,7 +83,23 @@ class Sprint:
     end_inclusive: dt.date
 
 
+# ---------------------------------------------------------------------------
+# Sprint metadata: fetching
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SprintMetadata:
+    """All three capacity-related API responses for one sprint, pre-fetched."""
+    team_days_off: Set[dt.date] = field(default_factory=set)
+    baseline_by_member: Dict[str, float] = field(default_factory=dict)
+    member_days_off: Dict[str, Set[dt.date]] = field(default_factory=dict)
+    baseline_per_day: float = 0.0
+    summary_days_off_count: Optional[int] = None
+
+
 def fetch_sprints(ado: AdoClient) -> List[Sprint]:
+    _t = time.perf_counter()
     iterations = ado.list_iterations()
     sprints: List[Sprint] = []
     for it in iterations:
@@ -87,6 +119,7 @@ def fetch_sprints(ado: AdoClient) -> List[Sprint]:
         end_incl = end_excl - dt.timedelta(days=1)
         sprints.append(Sprint(str(it_id), str(name), start, end_excl, end_incl))
     sprints.sort(key=lambda s: (s.start_date, s.name))
+    logger.info("fetch_sprints: %d sprints in %.0fms", len(sprints), (time.perf_counter() - _t) * 1000)
     return sprints
 
 
@@ -218,6 +251,39 @@ def fetch_iteration_summary_days_off_count(ado: AdoClient, sprint: Sprint, basel
     return None
 
 
+def _fetch_sprint_metadata(ado: AdoClient, sprint: Sprint) -> _SprintMetadata:
+    """Fetch all three capacity-related endpoints for one sprint.
+
+    Designed to run in a thread pool — the AdoClient's requests.Session is
+    thread-safe for concurrent reads once the headers are initialised.
+    Call order: team_days_off → capacities → (derive baseline_per_day) →
+    iteration_summary.  Steps 1 and 2 are independent but kept serial here
+    because the cross-sprint parallelism in build_capacity_schedule already
+    provides the dominant speedup.
+    """
+    team_days_off = fetch_team_days_off_for_sprint(ado, sprint)
+    baseline_by_member, member_days_off = fetch_capacities_for_sprint(ado, sprint)
+
+    baseline_per_day = sum(baseline_by_member.values()) if baseline_by_member else 0.0
+    if baseline_per_day <= 0.0:
+        baseline_per_day = max(1.0, float(len(baseline_by_member) or 1))
+
+    summary_days_off_count = fetch_iteration_summary_days_off_count(ado, sprint, baseline_per_day)
+
+    return _SprintMetadata(
+        team_days_off=team_days_off,
+        baseline_by_member=baseline_by_member,
+        member_days_off=member_days_off,
+        baseline_per_day=baseline_per_day,
+        summary_days_off_count=summary_days_off_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Capacity schedule builder
+# ---------------------------------------------------------------------------
+
+
 def build_capacity_schedule(
     ado: AdoClient,
     sprints: List[Sprint],
@@ -227,6 +293,43 @@ def build_capacity_schedule(
     cap_rows: List[Dict[str, Any]] = []
     per_date_ratio: Dict[dt.date, float] = {}
 
+    if not sprints:
+        return pd.DataFrame(sprint_rows), pd.DataFrame(cap_rows), per_date_ratio
+
+    # ------------------------------------------------------------------
+    # Phase 1: Fetch all sprint metadata in parallel.
+    # Each sprint requires 3 independent-ish API calls; doing them in a
+    # thread pool reduces N×3 serial round-trips to ceil(N/workers)×3.
+    # Example: 20 sprints, 4 workers → 5 "rounds" instead of 20 rounds,
+    # saving ~75% of metadata fetch time.
+    # ------------------------------------------------------------------
+    _t_meta = time.perf_counter()
+    n_workers = min(len(sprints), _ADO_MAX_WORKERS)
+    api_calls_expected = len(sprints) * 3  # team_days_off + capacities + iteration_summary
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        meta_list: List[_SprintMetadata] = list(
+            pool.map(lambda sp: _fetch_sprint_metadata(ado, sp), sprints)
+        )
+
+    sprint_meta: Dict[str, _SprintMetadata] = {
+        sp.iteration_id: meta for sp, meta in zip(sprints, meta_list)
+    }
+    _t_meta_elapsed = time.perf_counter() - _t_meta
+    logger.info(
+        "build_capacity_schedule: fetched metadata for %d sprints "
+        "(%d API calls) in %.1fs [%d workers, ~%.0f ms/sprint serial-equivalent]",
+        len(sprints),
+        api_calls_expected,
+        _t_meta_elapsed,
+        n_workers,
+        (_t_meta_elapsed / len(sprints)) * 1000,
+    )
+
+    # ------------------------------------------------------------------
+    # Phase 2: Compute capacity schedule (pure computation, no API calls).
+    # ------------------------------------------------------------------
+    _t_compute = time.perf_counter()
     for sp in sprints:
         sprint_rows.append(
             {
@@ -238,12 +341,12 @@ def build_capacity_schedule(
             }
         )
 
-        team_off = fetch_team_days_off_for_sprint(ado, sp)
-        baseline_by_member, member_off = fetch_capacities_for_sprint(ado, sp)
-
-        baseline_per_day = sum(baseline_by_member.values()) if baseline_by_member else 0.0
-        if baseline_per_day <= 0.0:
-            baseline_per_day = max(1.0, float(len(baseline_by_member) or 1))
+        meta = sprint_meta[sp.iteration_id]
+        team_off = meta.team_days_off
+        baseline_by_member = meta.baseline_by_member
+        member_off = meta.member_days_off
+        baseline_per_day = meta.baseline_per_day
+        summary_team_days_off_count = meta.summary_days_off_count
 
         working_dates = [d for d in iter_dates(sp.start_date, sp.end_inclusive) if d.weekday() in working_weekdays]
         working_dates_set = set(working_dates)
@@ -270,7 +373,6 @@ def build_capacity_schedule(
 
         inferred_zero_capacity_dates = sorted(set(inferred_zero_capacity_dates) - set(team_days_off_working))
 
-        summary_team_days_off_count = fetch_iteration_summary_days_off_count(ado, sp, baseline_per_day)
         explicit_or_inferred_days_off = set(team_days_off_working) | set(inferred_zero_capacity_dates)
 
         summary_fallback_count = 0
@@ -308,7 +410,17 @@ def build_capacity_schedule(
             }
         )
 
+    logger.debug(
+        "build_capacity_schedule: schedule computation for %d sprints in %.0fms",
+        len(sprints),
+        (time.perf_counter() - _t_compute) * 1000,
+    )
     return pd.DataFrame(sprint_rows), pd.DataFrame(cap_rows), per_date_ratio
+
+
+# ---------------------------------------------------------------------------
+# Throughput from saved query
+# ---------------------------------------------------------------------------
 
 
 def parse_query_id_from_url_or_guid(s: str) -> Optional[str]:
@@ -336,9 +448,16 @@ def fetch_daily_throughput_from_saved_query(
     if not qid:
         raise ValueError("Could not parse saved query GUID from the provided value")
 
+    # -- WIQL query: retrieve matching work item IDs ----------------------
+    _t_wiql = time.perf_counter()
     wiql = ado.wiql_query_by_id(qid)
     work_items = wiql.get("workItems") or []
     ids = [int(wi.get("id")) for wi in work_items if isinstance(wi, dict) and wi.get("id") is not None]
+    logger.info(
+        "fetch_throughput: WIQL query returned %d work item IDs in %.0fms",
+        len(ids),
+        (time.perf_counter() - _t_wiql) * 1000,
+    )
 
     if not ids:
         return _zero_filled_daily(history_start, history_end, working_weekdays, team_days_off_all)
@@ -356,51 +475,91 @@ def fetch_daily_throughput_from_saved_query(
     )
     fields = list(dict.fromkeys(candidates))
 
-    done_dates: List[dt.date] = []
+    # -- Work item batch fetch (parallelised) -----------------------------
     chunk = 200
-    for i in range(0, len(ids), chunk):
-        batch = ids[i : i + chunk]
-        payload = ado.work_items_batch(batch, fields=fields)
-        items = payload.get("value") or []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            f = it.get("fields") or {}
-            if not isinstance(f, dict):
-                continue
-            picked = None
-            for k in fields:
-                if f.get(k):
-                    picked = f.get(k)
-                    break
-            if not picked:
-                continue
-            dtd = parse_ado_dt(picked)
-            if not dtd:
-                continue
-            done_dates.append(dtd.date())
+    batches = [ids[i : i + chunk] for i in range(0, len(ids), chunk)]
+    n_workers = min(len(batches), _ADO_MAX_WORKERS)
+    logger.info(
+        "fetch_throughput: fetching %d work items in %d batch(es) [chunk=%d, workers=%d]",
+        len(ids),
+        len(batches),
+        chunk,
+        n_workers,
+    )
+
+    _t_batch = time.perf_counter()
+
+    def _fetch_batch(batch: List[int]) -> List[Dict[str, Any]]:
+        return ado.work_items_batch(batch, fields=fields).get("value") or []
+
+    if len(batches) == 1:
+        all_items: List[Dict[str, Any]] = _fetch_batch(batches[0])
+    else:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            all_items = []
+            for chunk_items in pool.map(_fetch_batch, batches):
+                all_items.extend(chunk_items)
+
+    logger.info(
+        "fetch_throughput: batch fetch complete — %d items in %.0fms",
+        len(all_items),
+        (time.perf_counter() - _t_batch) * 1000,
+    )
+
+    # -- Extract done dates -----------------------------------------------
+    _t_tx = time.perf_counter()
+    done_dates: List[dt.date] = []
+    for it in all_items:
+        if not isinstance(it, dict):
+            continue
+        f = it.get("fields") or {}
+        if not isinstance(f, dict):
+            continue
+        picked = None
+        for k in fields:
+            if f.get(k):
+                picked = f.get(k)
+                break
+        if not picked:
+            continue
+        dtd = parse_ado_dt(picked)
+        if not dtd:
+            continue
+        done_dates.append(dtd.date())
+
+    logger.info(
+        "fetch_throughput: extracted %d done dates from %d items in %.0fms",
+        len(done_dates),
+        len(all_items),
+        (time.perf_counter() - _t_tx) * 1000,
+    )
 
     if not done_dates:
         return _zero_filled_daily(history_start, history_end, working_weekdays, team_days_off_all)
 
+    # -- Build daily throughput dataframe ---------------------------------
+    _t_df = time.perf_counter()
     ser = pd.Series(done_dates, name="date").value_counts().sort_index()
     df = ser.reset_index()
     df.columns = ["date", "done_count"]
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df = df[(df["date"] >= history_start) & (df["date"] <= history_end)].copy()
 
+    # Map done counts onto the zero-filled working-day grid.
+    # Uses a dict lookup instead of a full merge to avoid the column-suffix
+    # confusion and unnecessary DataFrame allocation.
     filled = _zero_filled_daily(history_start, history_end, working_weekdays, team_days_off_all)
+    done_by_date: Dict[dt.date, int] = dict(zip(df["date"], df["done_count"]))
+    filled["done_count"] = filled["date"].map(done_by_date).fillna(0).astype(int)
 
-    # IMPORTANT: avoid done_count_x/done_count_y confusion
-    merged = filled.merge(df, on="date", how="left", suffixes=("_base", ""))
-    # df column keeps "done_count", base becomes "done_count_base"
-    if "done_count" not in merged.columns:
-        # fall back defensively
-        dc = merged.filter(like="done_count").columns.tolist()
-        raise KeyError(f"done_count not found after merge; columns={dc}")
-
-    merged["done_count"] = merged["done_count"].fillna(0).astype(int)
-    return merged[["date", "done_count", "is_working_day"]]
+    logger.debug(
+        "fetch_throughput: dataframe built in %.0fms (%d rows, history %s–%s)",
+        (time.perf_counter() - _t_df) * 1000,
+        len(filled),
+        history_start,
+        history_end,
+    )
+    return filled[["date", "done_count", "is_working_day"]]
 
 
 def _zero_filled_daily(

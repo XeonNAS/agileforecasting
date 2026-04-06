@@ -401,6 +401,7 @@ if refresh:
             st.stop()
     else:
         try:
+            _t_sync_start = time.perf_counter()
             ado = AdoClient(AdoRef(org, project, team), pat)
             team_settings = ado.get_team_settings()
             working_days = team_settings.get("workingDays") or ["monday", "tuesday", "wednesday", "thursday", "friday"]
@@ -457,6 +458,14 @@ if refresh:
                 else pd.DataFrame(columns=["iteration_id", "sprint_name", "start_date", "end_date", "done_count"])
             )
 
+            _app_logger.info(
+                "ADO sync complete in %.1fs (org=%s project=%s team=%s history=%dd)",
+                time.perf_counter() - _t_sync_start,
+                org,
+                project,
+                team,
+                history_days,
+            )
             st.session_state["ado_loaded"] = True
             st.session_state["working_weekdays"] = working_weekdays
             st.session_state["sprints"] = sprints
