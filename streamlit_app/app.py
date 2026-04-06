@@ -24,6 +24,8 @@ from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
 from agile_mc.chart_export import export_plotly_figure
 from agile_mc.plots import how_many_figures, when_figures
+from agile_mc.pat_store import forget_pat as pat_forget
+from agile_mc.pat_store import keyring_available, load_pat, save_pat
 from agile_mc.secure_store import forget as secure_forget
 from agile_mc.secure_store import load_encrypted, save_encrypted
 from agile_mc.simulation import (
@@ -176,7 +178,7 @@ with st.sidebar:
                         },
                         st.session_state["cfg_passphrase"],
                     )
-                    st.success("Saved settings (encrypted). PAT is never saved.")
+                    st.success("Saved settings (encrypted). PAT is stored separately via the keyring/PAT controls.")
                 except Exception as e:
                     st.error(f"Could not save: {e}")
 
@@ -191,14 +193,56 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Connect to Azure DevOps")
-    st.caption("Enter your PAT each time you refresh. It is never saved to disk.")
 
-    # Deferred PAT clear: applied here, before the widget that owns cfg_pat is
-    # instantiated, so Streamlit allows the write.  The flag is set by the
-    # post-sync cleanup block below (which runs after widget creation and
-    # therefore cannot write directly).
+    # ---- PAT security controls --------------------------------------------------
+    # Check keyring once per session to avoid a probe call on every rerun.
+    if "_keyring_ok" not in st.session_state:
+        st.session_state["_keyring_ok"] = keyring_available()
+    _kr_ok: bool = st.session_state["_keyring_ok"]
+
+    if _kr_ok:
+        st.caption("Your PAT is stored in the OS credential store (keyring) and loaded automatically.")
+    else:
+        st.caption(
+            "OS keyring not available on this machine. "
+            "PAT can be saved encrypted to disk — enter a passphrase above."
+        )
+
+    st.toggle(
+        "Save PAT to OS keyring" if _kr_ok else "Save PAT (encrypted file, needs passphrase)",
+        value=_kr_ok,
+        key="cfg_save_pat",
+        help=(
+            "When on, your PAT is saved to the OS credential store after a successful sync "
+            "and loaded automatically on the next run."
+            if _kr_ok
+            else "When on, your PAT is saved to an encrypted file after sync. "
+            "Requires the passphrase above to be set."
+        ),
+    )
+
+    if st.button("Forget saved PAT", key="btn_forget_pat"):
+        if pat_forget():
+            st.success("Saved PAT removed from secure storage.")
+            st.session_state["_clear_pat_on_next_run"] = True
+            st.rerun()
+        else:
+            st.info("No saved PAT found.")
+
+    # ---- Deferred PAT clear + keyring auto-load --------------------------------
+    # Deferred clear: set by the post-sync block (can't write to a widget-owned
+    # key after it has been instantiated in the same run).  We pop cfg_pat here
+    # (before the widget) so Streamlit allows the write, then immediately try to
+    # reload from the keyring so the field stays populated if a PAT was saved.
     if st.session_state.pop("_clear_pat_on_next_run", False):
-        st.session_state["cfg_pat"] = ""
+        st.session_state.pop("cfg_pat", None)
+
+    # Auto-load from keyring/fallback on first render or after a sync-triggered
+    # clear.  Only runs when cfg_pat is absent from session state.
+    if "cfg_pat" not in st.session_state:
+        _pre_pat = load_pat(passphrase=st.session_state.get("cfg_passphrase") or None)
+        if _pre_pat:
+            st.session_state["cfg_pat"] = _pre_pat
 
     with st.form("ado_connection"):
         st.text_input("Org", value=st.session_state.get("cfg_org", ""), key="cfg_org")
@@ -359,11 +403,22 @@ if refresh:
                     passphrase2,
                 )
 
-            # Discard the PAT on the next rerun.  We cannot write to cfg_pat
-            # here because the widget that owns that key was already instantiated
-            # earlier in this run (line ~206).  Setting the flag instead lets
-            # the deferred-clear block (above the form) wipe the key before
-            # the widget is created on the following rerun.
+            # Save PAT to secure storage if requested.  Do this before the
+            # deferred-clear flag so pat is still in scope.
+            if st.session_state.get("cfg_save_pat"):
+                try:
+                    _backend = save_pat(pat, passphrase=passphrase2 or None)
+                    _label = "OS keyring" if _backend == "keyring" else "encrypted file"
+                    st.toast(f"PAT saved to {_label}.", icon="🔒")
+                except RuntimeError:
+                    st.warning(
+                        "PAT not saved: OS keyring unavailable and no passphrase entered. "
+                        "Enter a passphrase above and try again."
+                    )
+
+            # Deferred PAT clear: we cannot write to cfg_pat here because the
+            # widget that owns that key was instantiated earlier in this run.
+            # The flag is consumed before the form on the next rerun.
             st.session_state["_clear_pat_on_next_run"] = True
 
         except Exception as e:

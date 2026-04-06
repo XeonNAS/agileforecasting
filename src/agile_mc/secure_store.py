@@ -18,10 +18,29 @@ class SecureStorePaths:
     enc_file: Path
 
 
-def default_paths(app_name: str = "agile-montecarlo") -> SecureStorePaths:
-    # Linux-friendly default; works on other OSes too.
+_APP_NAME = "agileforecasting"
+_OLD_APP_NAME = "agile-montecarlo"  # pre-rename; kept only for migration
+
+
+def default_paths(app_name: str = _APP_NAME) -> SecureStorePaths:
+    # Linux-friendly default (~/.config/agileforecasting/); works on all OSes.
     base = Path(os.path.expanduser("~")) / ".config" / app_name
-    return SecureStorePaths(config_dir=base, enc_file=base / "ado_settings.enc.json")
+    paths = SecureStorePaths(config_dir=base, enc_file=base / "ado_settings.enc.json")
+
+    # One-time migration: copy settings from the old directory if the new one
+    # does not yet exist.  Leaves the old file in place (user can delete it).
+    if not paths.enc_file.exists():
+        old_enc = Path(os.path.expanduser("~")) / ".config" / _OLD_APP_NAME / "ado_settings.enc.json"
+        if old_enc.exists():
+            import shutil
+
+            paths.config_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(old_enc, paths.enc_file)
+            except Exception:
+                pass  # migration is best-effort; user can re-save manually
+
+    return paths
 
 
 def _derive_key(passphrase: str, salt: bytes, iterations: int = 200_000) -> bytes:

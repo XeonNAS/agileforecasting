@@ -1,4 +1,4 @@
-# Agile Monte Carlo — Streamlit App
+# AgileForecasting
 
 Monte Carlo forecasting for Agile teams using Azure DevOps data.
 
@@ -37,44 +37,128 @@ streamlit run streamlit_app/app.py
 
 Open <http://localhost:8501> in your browser.
 
-In the sidebar enter your Azure DevOps details:
+---
 
-**Settings management** (top of sidebar)
+## Sidebar — settings overview
 
-| Field | Description |
+### Settings management (top of sidebar)
+
+| Field / button | Description |
 |---|---|
-| Encryption passphrase | Encrypts/decrypts non-secret settings saved to disk. Not stored. |
-| Load saved / Save now / Forget | Manage the encrypted settings file. |
+| Encryption passphrase | Encrypts/decrypts non-secret settings on disk. Never stored itself. |
+| Load saved | Load org/project/team/query settings from the encrypted file. |
+| Save now | Save non-secret settings to the encrypted file immediately. |
+| Forget saved | Delete the encrypted settings file. |
+| Auto-save on refresh | Automatically saves settings after each successful ADO sync. |
 
-**Connect to Azure DevOps** (form — submitted with the Refresh button)
+### PAT storage (Connect to Azure DevOps section)
+
+| Control | Description |
+|---|---|
+| Save PAT toggle | When on, the PAT is saved securely after a successful sync. |
+| Forget saved PAT | Removes the PAT from all secure storage backends. |
+
+### Connect to Azure DevOps (form)
 
 | Field | Description |
 |---|---|
 | Org | e.g. `myorg` |
 | Project | e.g. `MyProject` |
 | Team | e.g. `MyProject Team` |
-| PAT | Personal Access Token. **Never saved to disk.** Cleared from memory after each refresh. |
-| Saved Query URL or GUID | A "Done by date" query GUID or its full URL |
+| PAT | Personal Access Token. Auto-populated from secure storage if saved. |
+| Saved Query URL or GUID | A "Done by date" query GUID or its full URL. |
 
-> **PAT handling:** the PAT is entered in a form and discarded from session state
-> immediately after a successful Azure DevOps sync. It is never written to the
-> encrypted settings file. Re-enter it only when you need to refresh data.
+---
 
-Non-secret settings (org, project, team, query, history window) are encrypted and
-saved to `~/.config/agile-montecarlo/ado_settings.enc.json`.
-Set `MC_ADO_PASSPHRASE` env var to avoid typing the passphrase on every start.
+## PAT handling
+
+### How it works
+
+AgileForecasting stores your Azure DevOps PAT in the **OS credential store**
+via the [`keyring`](https://pypi.org/project/keyring/) library:
+
+| Platform | Backend |
+|---|---|
+| Linux (desktop) | GNOME Keyring / KWallet via SecretService |
+| macOS | macOS Keychain |
+| Windows | Windows Credential Manager |
+
+**Workflow:**
+
+1. Enter your PAT in the sidebar form.
+2. Enable **Save PAT to OS keyring** (on by default when keyring is available).
+3. Click **Refresh from Azure DevOps**.
+4. On success the PAT is saved to the credential store and cleared from the
+   browser session.
+5. On the next run the PAT is loaded automatically — just click Refresh.
+
+### Removing a saved PAT
+
+Click **Forget saved PAT** in the sidebar, or run from the terminal:
+
+```python
+python -c "from agile_mc.pat_store import forget_pat; forget_pat(); print('done')"
+```
+
+### Headless / no-keyring fallback
+
+On servers without a running keyring daemon, the toggle label changes to
+**Save PAT (encrypted file, needs passphrase)**. Enter your encryption
+passphrase in the field above; the PAT is then saved to a separate
+AES-256 Fernet-encrypted file:
+
+```
+~/.config/agileforecasting/pat.enc.json   ← PAT (encrypted, 0o600)
+~/.config/agileforecasting/ado_settings.enc.json  ← non-secret settings
+```
+
+The passphrase is never written to disk. Set `MC_ADO_PASSPHRASE` to avoid
+typing it on every start.
+
+### What is never stored
+
+- The PAT in plaintext — anywhere (no files, no logs, no exports, no session
+  state after a sync).
+- The encryption passphrase.
+- Any PAT in the non-secret settings file (`ado_settings.enc.json`).
 
 ### PAT scopes required
 
-- **Work Items → Read** (Boards)
-- **Work → Read** (Team Settings / Iterations / Capacities)
+Create the PAT with only these scopes:
+
+| Scope | Permission | Why |
+|---|---|---|
+| Work Items | Read | Fetch items from saved query |
+| Work | Read | Team settings, iterations, capacities, days off |
+
+---
+
+## Encrypted settings file
+
+Non-secret settings (org, project, team, query, history window) are encrypted
+with PBKDF2-derived Fernet (AES-256-CBC) and saved to:
+
+```
+~/.config/agileforecasting/ado_settings.enc.json
+```
+
+Set `MC_ADO_PASSPHRASE` to pre-fill the passphrase and enable auto-save:
+
+```bash
+export MC_ADO_PASSPHRASE=your-passphrase
+streamlit run streamlit_app/app.py
+```
+
+> **Migration note:** if you used an earlier version of this app, your
+> settings were stored at `~/.config/agile-montecarlo/ado_settings.enc.json`.
+> The app migrates them automatically on first run. You can delete the old
+> directory once the new one is confirmed working.
 
 ---
 
 ## App-level password gate
 
-For shared team deployments where you want a lightweight login screen, set the
-`MC_APP_PASSWORD` environment variable:
+For shared team deployments, set `MC_APP_PASSWORD`:
 
 ```bash
 export MC_APP_PASSWORD=your-shared-password
@@ -85,10 +169,9 @@ When set, the app shows a password prompt before any content. A **Sign out**
 button appears in the sidebar. When unset, no login screen is shown (default
 for local dev).
 
-> **Important:** this is a convenience gate for internal use. It is **not** a
-> substitute for a proper authenticating reverse proxy (nginx + OAuth2 Proxy,
-> Cloudflare Access, Azure AD App Proxy) in any public-facing deployment. For
-> production, combine both.
+> **Important:** this is a convenience gate for internal use, not a substitute
+> for a proper authenticating reverse proxy (nginx + OAuth2 Proxy, Cloudflare
+> Access, Azure AD App Proxy) for public-facing deployments.
 
 ---
 
@@ -101,67 +184,43 @@ for local dev).
 | `streamlit run` (local) | `127.0.0.1` (loopback) | Default — `.streamlit/config.toml` leaves `address` unset |
 | Docker container | `0.0.0.0` | `STREAMLIT_SERVER_ADDRESS=0.0.0.0` in `Dockerfile` |
 
-Local runs are only reachable from the same machine. If you need to expose the
-app on a local network (e.g. a VM), pass `--server.address 0.0.0.0` explicitly:
-
-```bash
-streamlit run streamlit_app/app.py --server.address 0.0.0.0
-```
-
 ### Docker
 
 ```bash
-docker build -t agile-mc .
-docker run -p 8501:8501 agile-mc
+docker build -t agileforecasting .
+docker run -p 8501:8501 agileforecasting
 ```
 
-Open <http://localhost:8501>.
-
-To pass environment variables into the container:
+To pass environment variables:
 
 ```bash
 docker run -p 8501:8501 \
   -e MC_APP_PASSWORD=your-shared-password \
   -e MC_ADO_PASSPHRASE=your-passphrase \
-  agile-mc
+  agileforecasting
 ```
+
+> **Note:** the OS keyring is not available inside a Docker container. Use the
+> encrypted-file fallback (set `MC_ADO_PASSPHRASE`) or enter the PAT manually
+> each session.
 
 ### File watcher
 
-`fileWatcherType = "none"` is set in `.streamlit/config.toml`. This disables
-auto-reload on file changes, which is appropriate for production and has no
-downside for a containerised deployment. For local development with hot reload:
+`fileWatcherType = "none"` is set in `.streamlit/config.toml`. For local dev
+with hot reload:
 
 ```bash
 streamlit run streamlit_app/app.py --server.fileWatcherType auto
 ```
 
-### Reverse proxy (recommended for shared / public deployments)
+### Reverse proxy
 
-The app itself has no TLS, rate limiting, or per-user authentication. For any
-deployment reachable by more than one person, place it behind a reverse proxy:
-
-- **nginx + OAuth2 Proxy** — open-source, self-hosted
-- **Cloudflare Access** — zero-config zero-trust, free tier available
-- **Azure AD App Proxy** — native if the team is already on Microsoft 365
-
-The `MC_APP_PASSWORD` shared-password gate is a lightweight complement, not a
-replacement. See [SECURITY.md](SECURITY.md) for the full risk assessment.
-
-### PAT least-privilege scopes
-
-Create the Azure DevOps PAT with only these scopes — no broader access is needed:
-
-| Scope | Permission | Why |
-|---|---|---|
-| Work Items | Read | Fetch items from saved query |
-| Work | Read | Team settings, iterations, capacities, days off |
+See [SECURITY.md](SECURITY.md) for the full risk assessment and reverse-proxy
+recommendations.
 
 ---
 
 ## Development setup
-
-Install the package in editable mode with dev dependencies (pytest, ruff):
 
 ```bash
 source .venv/bin/activate
@@ -182,12 +241,12 @@ ruff check src/ tests/
 
 ### Dependency lockfile
 
-`requirements.lock` pins every transitive runtime dependency to an exact version.
-Docker and CI both install from it. To regenerate after changing `pyproject.toml`:
+`requirements.lock` pins every transitive runtime dependency. Docker and CI
+install from it. To regenerate after changing `pyproject.toml`:
 
 ```bash
 source .venv/bin/activate
-pip install -e ".[dev]"      # ensures pip-tools is available
+pip install -e ".[dev]"
 pip-compile pyproject.toml \
   --output-file requirements.lock \
   --no-emit-index-url \
@@ -195,7 +254,7 @@ pip-compile pyproject.toml \
   --annotation-style line
 ```
 
-Commit the updated `requirements.lock` alongside any `pyproject.toml` changes.
+Commit `requirements.lock` alongside any `pyproject.toml` changes.
 
 ---
 
@@ -210,7 +269,8 @@ agileforecasting/
 │   ├── plots.py           # Plotly chart builders
 │   ├── calendar_export.py # When-calendar Plotly figure
 │   ├── chart_export.py    # PNG/SVG export via Kaleido
-│   └── secure_store.py    # Encrypted settings storage
+│   ├── secure_store.py    # Encrypted settings storage (non-secrets)
+│   └── pat_store.py       # Secure PAT storage (keyring + encrypted fallback)
 ├── streamlit_app/
 │   └── app.py             # Streamlit UI entrypoint
 ├── tests/                 # Unit tests for src/agile_mc

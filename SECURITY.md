@@ -8,7 +8,8 @@ This document summarises the security posture of the app and known risks to addr
 
 | Area | What's in place |
 |---|---|
-| PAT lifetime | Entered in a sidebar form; **cleared from `st.session_state` immediately after a successful ADO sync**. Never written to the encrypted settings file. |
+| PAT storage | Saved to OS credential store (GNOME Keyring / macOS Keychain / Windows Credential Manager) via `keyring`. Falls back to a separate AES-256 Fernet-encrypted file (`pat.enc.json`, mode 0o600) when the OS keyring is unavailable. PAT is **never** stored in plaintext, in the non-secret settings file, in logs, or in exports. |
+| PAT in session state | Present only during the render cycle of a sync. Cleared from `st.session_state` via a deferred-flag pattern immediately after a successful sync; retained on error so the user can retry without re-entering it. Error messages never include the PAT value. |
 | Non-secret settings | Org, project, team, query stored encrypted on disk with PBKDF2-derived Fernet key; passphrase never written to disk. |
 | HTML rendering | `unsafe_allow_html=True` is no longer used; tables use `st.dataframe`, calendar uses Plotly heatmap |
 | App password gate | Optional `MC_APP_PASSWORD` env var blocks all content behind a login form; uses `hmac.compare_digest`; stores only `_authenticated` boolean in session state |
@@ -20,12 +21,13 @@ This document summarises the security posture of the app and known risks to addr
 
 ## Known risks — prioritised
 
-### 1. PAT in session state during the fetch (low — window now minimised)
+### 1. PAT in session state during the fetch (low — window minimised)
 The PAT exists in `st.session_state["cfg_pat"]` only during the render cycle in
-which the form is submitted and the ADO sync runs. It is set to `""` on success.
-On error the PAT is retained so the user can retry without re-entering it, but the
-error message never includes the PAT value. **Residual risk:** a crash dump or
-Streamlit debug session opened during that one render could capture the PAT.
+which the form is submitted and the ADO sync runs. It is cleared from session
+state via a deferred-flag pattern on the following rerun. On error the PAT is
+retained so the user can retry without re-entering it; error messages never
+include the PAT value. **Residual risk:** a crash dump or Streamlit debug
+session opened during that one render could capture the PAT.
 **Mitigation:** run behind a private network or authenticated reverse proxy.
 
 ### 2. ~~`unsafe_allow_html=True`~~ (resolved)
@@ -51,10 +53,12 @@ authenticating reverse proxy (nginx + OAuth2 Proxy, Azure AD App Proxy, Cloudfla
 Access) in addition to, or instead of, this gate. Network-level access control
 (VPN, private subnet) remains the strongest mitigation.
 
-### 4. Encrypted settings file readable by OS user (low)
-`~/.config/agile-montecarlo/ado_settings.enc.json` is created with mode `0o600`
-(owner-read only). The passphrase is not stored. Risk is limited to local disk
-compromise.
+### 4. Encrypted files readable by OS user (low)
+`~/.config/agileforecasting/ado_settings.enc.json` (non-secret settings) and
+`~/.config/agileforecasting/pat.enc.json` (PAT fallback, when OS keyring is
+unavailable) are both created with mode `0o600` (owner-read only). The
+passphrase is not stored. Risk is limited to local disk compromise. When the OS
+keyring is used (default on desktop installations), no PAT file is written at all.
 
 ### 5. PAT scope not enforced by the app (informational)
 The app requests whatever the PAT can access. Follow least-privilege: scope the PAT

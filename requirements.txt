@@ -6,5 +6,6 @@ plotly>=5.18
 kaleido>=0.2.1
 cryptography>=42.0.0
 python-dateutil>=2.9
+keyring>=24.0
 # Install the agile_mc package itself from src/ (src layout requires this)
 -e .
