@@ -91,6 +91,7 @@ class Sprint:
 @dataclass
 class _SprintMetadata:
     """All three capacity-related API responses for one sprint, pre-fetched."""
+
     team_days_off: Set[dt.date] = field(default_factory=set)
     baseline_by_member: Dict[str, float] = field(default_factory=dict)
     member_days_off: Dict[str, Set[dt.date]] = field(default_factory=dict)
@@ -308,13 +309,9 @@ def build_capacity_schedule(
     api_calls_expected = len(sprints) * 3  # team_days_off + capacities + iteration_summary
 
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        meta_list: List[_SprintMetadata] = list(
-            pool.map(lambda sp: _fetch_sprint_metadata(ado, sp), sprints)
-        )
+        meta_list: List[_SprintMetadata] = list(pool.map(lambda sp: _fetch_sprint_metadata(ado, sp), sprints))
 
-    sprint_meta: Dict[str, _SprintMetadata] = {
-        sp.iteration_id: meta for sp, meta in zip(sprints, meta_list)
-    }
+    sprint_meta: Dict[str, _SprintMetadata] = {sp.iteration_id: meta for sp, meta in zip(sprints, meta_list)}
     _t_meta_elapsed = time.perf_counter() - _t_meta
     logger.info(
         "build_capacity_schedule: fetched metadata for %d sprints "

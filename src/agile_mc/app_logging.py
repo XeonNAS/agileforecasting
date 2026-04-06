@@ -8,6 +8,7 @@ Centralised helper that:
 
 Call ``configure_logging()`` once early in application start-up.
 """
+
 from __future__ import annotations
 
 import json
@@ -171,9 +172,7 @@ def configure_logging(level_name: Optional[str] = None) -> Path:
                 if issubclass(exc_type, KeyboardInterrupt):
                     _orig_excepthook(exc_type, exc_value, exc_tb)
                     return
-                logging.getLogger("agile_mc").critical(
-                    "Unhandled exception", exc_info=(exc_type, exc_value, exc_tb)
-                )
+                logging.getLogger("agile_mc").critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
 
             sys.excepthook = _excepthook
 

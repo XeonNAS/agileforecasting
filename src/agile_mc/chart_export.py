@@ -75,9 +75,7 @@ def _find_non_snap_chrome() -> Optional[str]:
             logger.debug("browser candidate %-28s not found on PATH", exe)
             continue
         if _is_snap_path(p):
-            logger.debug(
-                "browser candidate %-28s -> %s  [SKIP — Snap binary]", exe, p
-            )
+            logger.debug("browser candidate %-28s -> %s  [SKIP — Snap binary]", exe, p)
             continue
         logger.debug("browser candidate %-28s -> %s  [OK]", exe, p)
         return p
@@ -117,10 +115,7 @@ def _kaleido_bundled_chrome() -> Optional[str]:
     try:
         import kaleido
 
-        logger.info(
-            "Kaleido bundled Chrome not found locally; calling "
-            "kaleido.get_chrome_sync() to download…"
-        )
+        logger.info("Kaleido bundled Chrome not found locally; calling kaleido.get_chrome_sync() to download…")
         path = str(kaleido.get_chrome_sync())
         if path and os.path.exists(path):
             logger.info("Kaleido bundled Chrome downloaded to: %s", path)
@@ -157,9 +152,7 @@ def ensure_plotly_chrome() -> Optional[str]:
     existing = os.environ.get("BROWSER_PATH", "").strip()
     if existing:
         if not os.path.exists(existing):
-            logger.warning(
-                "BROWSER_PATH=%s does not exist — ignoring", existing
-            )
+            logger.warning("BROWSER_PATH=%s does not exist — ignoring", existing)
             del os.environ["BROWSER_PATH"]
         elif _is_snap_path(existing):
             logger.warning(
@@ -377,8 +370,7 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
             raise
 
         logger.warning(
-            "export_plotly_figure: browser failure on first attempt "
-            "(browser=%s snap=%s): %s: %s",
+            "export_plotly_figure: browser failure on first attempt (browser=%s snap=%s): %s: %s",
             browser or "none",
             browser_is_snap,
             type(first_exc).__name__,
@@ -433,8 +425,7 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
         except Exception as retry_exc:
             if _looks_like_browser_failure(retry_exc):
                 logger.error(
-                    "export_plotly_figure: retry also failed (browser=%s): "
-                    "%s: %s\n%s",
+                    "export_plotly_figure: retry also failed (browser=%s): %s: %s\n%s",
                     retry_browser,
                     type(retry_exc).__name__,
                     retry_exc,

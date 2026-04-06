@@ -9,6 +9,7 @@ required.  They verify that:
   - fetch_daily_throughput_from_saved_query handles single and multi-batch
     work-item fetches correctly.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -72,9 +73,7 @@ class TestFetchSprintMetadata:
 
     def test_team_days_off_parsed(self):
         sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
-        ado = _stub_ado(
-            team_days_off=[{"start": "2026-01-06T00:00:00Z", "end": "2026-01-06T00:00:00Z"}]
-        )
+        ado = _stub_ado(team_days_off=[{"start": "2026-01-06T00:00:00Z", "end": "2026-01-06T00:00:00Z"}])
         meta = _fetch_sprint_metadata(ado, sprint)
         assert dt.date(2026, 1, 6) in meta.team_days_off
 
@@ -105,9 +104,7 @@ class TestFetchSprintMetadata:
 
     def test_iteration_summary_days_off_parsed(self):
         sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
-        ado = _stub_ado(
-            iteration_capacities={"teams": [{"teamCapacityPerDay": 1.0, "teamTotalDaysOff": 2}]}
-        )
+        ado = _stub_ado(iteration_capacities={"teams": [{"teamCapacityPerDay": 1.0, "teamTotalDaysOff": 2}]})
         meta = _fetch_sprint_metadata(ado, sprint)
         assert meta.summary_days_off_count == 2
 
@@ -169,9 +166,7 @@ class TestBuildCapacitySchedule:
         assert pdr == {}
 
     def test_team_days_off_sets_ratio_to_zero(self):
-        ado = _stub_ado(
-            team_days_off=[{"start": "2026-01-06T00:00:00Z", "end": "2026-01-06T00:00:00Z"}]
-        )
+        ado = _stub_ado(team_days_off=[{"start": "2026-01-06T00:00:00Z", "end": "2026-01-06T00:00:00Z"}])
         sprints = [_make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))]
         _, _, per_date_ratio = build_capacity_schedule(ado, sprints, self._WORKING)
         assert per_date_ratio.get(dt.date(2026, 1, 6)) == 0.0
@@ -209,8 +204,7 @@ class TestFetchDailyThroughput:
         ado = MagicMock()
         ado.wiql_query_by_id.return_value = {"workItems": []}
         result = fetch_daily_throughput_from_saved_query(
-            ado, "12345678-1234-1234-1234-123456789012",
-            self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
+            ado, "12345678-1234-1234-1234-123456789012", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
         )
         assert "done_count" in result.columns
         assert result["done_count"].sum() == 0
@@ -219,8 +213,7 @@ class TestFetchDailyThroughput:
         items = [self._closed_item("2026-01-12T00:00:00Z")] * 3
         ado = self._stub_ado_for_throughput(ids=list(range(3)), fields_response=items)
         result = fetch_daily_throughput_from_saved_query(
-            ado, "12345678-1234-1234-1234-123456789012",
-            self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
+            ado, "12345678-1234-1234-1234-123456789012", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
         )
         day = result[result["date"] == dt.date(2026, 1, 12)]
         assert len(day) == 1
@@ -238,8 +231,7 @@ class TestFetchDailyThroughput:
             {"value": [self._closed_item("2026-01-15T00:00:00Z")] * 50},
         ]
         result = fetch_daily_throughput_from_saved_query(
-            ado, "12345678-1234-1234-1234-123456789012",
-            self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
+            ado, "12345678-1234-1234-1234-123456789012", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
         )
         day = result[result["date"] == dt.date(2026, 1, 15)]
         assert int(day.iloc[0]["done_count"]) == 250
@@ -248,17 +240,13 @@ class TestFetchDailyThroughput:
         ado = MagicMock()
         with pytest.raises(ValueError, match="Could not parse saved query GUID"):
             fetch_daily_throughput_from_saved_query(
-                ado, "not-a-guid",
-                self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
+                ado, "not-a-guid", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
             )
 
     def test_output_columns(self):
-        ado = self._stub_ado_for_throughput(
-            ids=[1], fields_response=[self._closed_item("2026-01-12T00:00:00Z")]
-        )
+        ado = self._stub_ado_for_throughput(ids=[1], fields_response=[self._closed_item("2026-01-12T00:00:00Z")])
         result = fetch_daily_throughput_from_saved_query(
-            ado, "12345678-1234-1234-1234-123456789012",
-            self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
+            ado, "12345678-1234-1234-1234-123456789012", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
         )
         assert set(result.columns) == {"date", "done_count", "is_working_day"}
 
@@ -266,7 +254,6 @@ class TestFetchDailyThroughput:
         items = [self._closed_item("2025-06-01T00:00:00Z")]  # before history
         ado = self._stub_ado_for_throughput(ids=[1], fields_response=items)
         result = fetch_daily_throughput_from_saved_query(
-            ado, "12345678-1234-1234-1234-123456789012",
-            self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
+            ado, "12345678-1234-1234-1234-123456789012", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
         )
         assert result["done_count"].sum() == 0

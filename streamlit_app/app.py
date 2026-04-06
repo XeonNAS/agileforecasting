@@ -160,6 +160,7 @@ st.session_state.setdefault("cfg_seed", "")
 st.session_state.setdefault("cfg_project_ratio", 80)
 st.session_state.setdefault("cfg_log_level", load_log_level())
 
+
 def _on_log_level_change() -> None:
     """Persist the new log level and reconfigure logging immediately."""
     new_level = str(st.session_state.get("cfg_log_level", "FATAL"))

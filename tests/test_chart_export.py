@@ -4,6 +4,7 @@ These tests require Chrome/kaleido to be available (same requirement as the
 production export path).  They are intentionally integration-level: mocking
 kaleido internals would mask the exact failure we experienced in production.
 """
+
 from __future__ import annotations
 
 import pytest
