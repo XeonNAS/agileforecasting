@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hmac
 import json
+import logging
 import os
 import re
 import time
@@ -23,6 +24,7 @@ from agile_mc.ado_sync import (
 )
 from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
+from agile_mc.app_logging import LOG_LEVEL_OPTIONS, configure_logging, load_log_level, save_log_level
 from agile_mc.chart_export import BrowserNotAvailableError, export_plotly_figure
 from agile_mc.pat_store import forget_pat as pat_forget
 from agile_mc.pat_store import keyring_available, load_pat, save_pat
@@ -112,6 +114,11 @@ def months_needed_to_cover_p95(completion_dates: List[dt.date], start_date: dt.d
 
 st.set_page_config(page_title="AgileForecasting", layout="wide")
 
+# ---- Logging — configured before anything else so startup errors are captured.
+# configure_logging() reads the persisted level from disk (default FATAL).
+_log_path = configure_logging()
+_app_logger = logging.getLogger("agile_mc.app")
+
 # ---- App-level password gate (optional — set MC_APP_PASSWORD to enable)
 _app_password = get_app_password()
 if _app_password is not None and not st.session_state.get("_authenticated"):
@@ -151,6 +158,14 @@ st.session_state.setdefault("cfg_done_field", "AUTO")
 st.session_state.setdefault("cfg_history_days", 180)
 st.session_state.setdefault("cfg_seed", "")
 st.session_state.setdefault("cfg_project_ratio", 80)
+st.session_state.setdefault("cfg_log_level", load_log_level())
+
+def _on_log_level_change() -> None:
+    """Persist the new log level and reconfigure logging immediately."""
+    new_level = str(st.session_state.get("cfg_log_level", "FATAL"))
+    save_log_level(new_level)
+    configure_logging(new_level)
+
 
 # ---- Sidebar
 with st.sidebar:
@@ -327,6 +342,20 @@ with st.sidebar:
         st.number_input("Items remaining", min_value=1, value=50, step=1, key="cfg_items_remaining")
 
     st.slider("Calendar months to show (When)", min_value=1, max_value=24, value=3, key="cfg_months")
+
+    st.divider()
+    st.subheader("App settings")
+    st.selectbox(
+        "Log level",
+        options=LOG_LEVEL_OPTIONS,
+        key="cfg_log_level",
+        on_change=_on_log_level_change,
+        help=(
+            "Controls the verbosity of the application log file. "
+            "FATAL logs only critical errors; DEBUG logs everything including export details."
+        ),
+    )
+    st.caption(f"Log file: `{_log_path}`")
 
 # ---- Read connection inputs (PAT read here; cleared after successful fetch)
 org = st.session_state.get("cfg_org", "").strip()
@@ -598,7 +627,8 @@ if mode.startswith("How Many"):
         except BrowserNotAvailableError as e:
             st.error(f"Chart export unavailable: {e}")
         except Exception:
-            st.error("Chart export failed. Try a different format or check the app logs.")
+            _app_logger.error("How Many chart export failed", exc_info=True)
+            st.error(f"Chart export failed. See app log: {_log_path}")
 
     summary = {
         "forecast_type": "how_many",
@@ -701,17 +731,23 @@ else:
         if seed is not None:
             context_lines.append(f"Seed: {seed}")
 
-        # Uses Plotly calendar export (PNG/SVG)
-        cal_fig = build_when_calendar_figure(
-            completion_dates=completion_dates,
-            sprint_label_by_date=sprint_label_by_date,
-            months_to_show=months_show,
-            start_date=forecast_start,
-            cols=4,
-            title="When forecast calendar",
-            context_lines=context_lines,
-        )
         try:
+            _app_logger.info(
+                "Calendar export requested: fmt=%s months=%d dates=%d",
+                cal_fmt,
+                months_show,
+                len(completion_dates),
+            )
+            # Uses Plotly calendar export (PNG/SVG)
+            cal_fig = build_when_calendar_figure(
+                completion_dates=completion_dates,
+                sprint_label_by_date=sprint_label_by_date,
+                months_to_show=months_show,
+                start_date=forecast_start,
+                cols=4,
+                title="When forecast calendar",
+                context_lines=context_lines,
+            )
             ex = export_plotly_figure(cal_fig, fmt=cal_fmt, base_name="when_calendar")
             st.download_button(
                 "Download calendar",
@@ -723,7 +759,8 @@ else:
         except BrowserNotAvailableError as e:
             st.error(f"Chart export unavailable: {e}")
         except Exception:
-            st.error("Chart export failed. Try a different format or check the app logs.")
+            _app_logger.error("Calendar export failed", exc_info=True)
+            st.error(f"Chart export failed. See app log: {_log_path}")
 
     figs = when_figures(completion_dates)
     with st.expander("Show distribution charts", expanded=False):
@@ -750,7 +787,8 @@ else:
             except BrowserNotAvailableError as e:
                 st.error(f"Chart export unavailable: {e}")
             except Exception:
-                st.error("Chart export failed. Try a different format or check the app logs.")
+                _app_logger.error("When chart export failed", exc_info=True)
+                st.error(f"Chart export failed. See app log: {_log_path}")
 
     summary = {
         "forecast_type": "when",

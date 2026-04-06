@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar as pycal
 import datetime as dt
+import logging
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -10,6 +11,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from .simulation import completion_cdf_by_date
+
+logger = logging.getLogger(__name__)
 
 
 def _esc(text: str) -> str:
@@ -81,7 +84,17 @@ def build_when_calendar_figure(
     - For screen rendering (no ``context_lines``) a small 60 px top margin is
       used and no header annotation is added — Streamlit's own heading suffices.
     """
+    logger.debug(
+        "build_when_calendar_figure: months=%d cols=%d dates=%d start=%s export=%s",
+        months_to_show,
+        cols,
+        len(completion_dates) if completion_dates else 0,
+        start_date,
+        bool(context_lines),
+    )
+
     if not completion_dates:
+        logger.warning("build_when_calendar_figure: empty completion_dates — returning empty figure")
         return go.Figure()
 
     cols = max(1, int(cols))
@@ -319,5 +332,12 @@ def build_when_calendar_figure(
         paper_bgcolor="white",
         plot_bgcolor="white",
         font=dict(size=12),
+    )
+    logger.debug(
+        "build_when_calendar_figure: done — width=%d height=%d rows=%d months=%d",
+        width,
+        height,
+        rows,
+        len(months),
     )
     return fig
