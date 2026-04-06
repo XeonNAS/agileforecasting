@@ -10,7 +10,29 @@ Monte Carlo forecasting for Agile teams using Azure DevOps data.
 
 ---
 
-## Ubuntu setup
+## Windows setup
+
+See **[docs/WINDOWS_SETUP.md](docs/WINDOWS_SETUP.md)** for the full
+step-by-step Windows guide, including PowerShell commands, first-run
+configuration, and troubleshooting.
+
+Quick summary:
+
+```powershell
+git clone https://github.com/XeonNAS/agileforecasting.git
+cd agileforecasting
+python -m venv .venv
+.venv\Scripts\Activate.ps1      # allow scripts first if needed: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+streamlit run streamlit_app\app.py
+```
+
+Open <http://localhost:8501> in your browser.
+
+---
+
+## Linux (Ubuntu) setup
 
 ```bash
 sudo apt update
@@ -18,7 +40,7 @@ sudo apt install -y python3.12 python3.12-venv python3-pip
 ```
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/XeonNAS/agileforecasting.git
 cd agileforecasting
 python3.12 -m venv .venv
 source .venv/bin/activate
@@ -31,8 +53,15 @@ pip install -r requirements.txt   # installs deps AND the agile_mc package from 
 ## Run locally
 
 ```bash
+# Linux / macOS
 source .venv/bin/activate
 streamlit run streamlit_app/app.py
+```
+
+```powershell
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+streamlit run streamlit_app\app.py
 ```
 
 Open <http://localhost:8501> in your browser.
@@ -145,8 +174,21 @@ with PBKDF2-derived Fernet (AES-256-CBC) and saved to:
 Set `MC_ADO_PASSPHRASE` to pre-fill the passphrase and enable auto-save:
 
 ```bash
+# Linux / macOS
 export MC_ADO_PASSPHRASE=your-passphrase
 streamlit run streamlit_app/app.py
+```
+
+```powershell
+# Windows PowerShell (current session only)
+$env:MC_ADO_PASSPHRASE = "your-passphrase"
+streamlit run streamlit_app\app.py
+```
+
+To set it permanently on Windows so it persists across sessions:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("MC_ADO_PASSPHRASE", "your-passphrase", "User")
 ```
 
 > **Migration note:** if you used an earlier version of this app, your
@@ -161,8 +203,15 @@ streamlit run streamlit_app/app.py
 For shared team deployments, set `MC_APP_PASSWORD`:
 
 ```bash
+# Linux / macOS
 export MC_APP_PASSWORD=your-shared-password
 streamlit run streamlit_app/app.py
+```
+
+```powershell
+# Windows PowerShell
+$env:MC_APP_PASSWORD = "your-shared-password"
+streamlit run streamlit_app\app.py
 ```
 
 When set, the app shows a password prompt before any content. A **Sign out**
@@ -223,7 +272,14 @@ recommendations.
 ## Development setup
 
 ```bash
+# Linux / macOS
 source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+```powershell
+# Windows
+.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 ```
 
