@@ -8,6 +8,10 @@ from typing import Any, Optional
 import plotly.graph_objects as go
 
 
+class BrowserNotAvailableError(RuntimeError):
+    """Raised when image export fails because no Chrome/Chromium browser is installed."""
+
+
 @dataclass(frozen=True)
 class ChartExportResult:
     filename: str
@@ -63,16 +67,6 @@ def ensure_plotly_chrome() -> Optional[str]:
     if found:
         os.environ["BROWSER_PATH"] = found
         return found
-
-    try:
-        import plotly.io as pio
-
-        chrome_path = str(pio.get_chrome())
-        if chrome_path and os.path.exists(chrome_path):
-            os.environ["BROWSER_PATH"] = chrome_path
-            return chrome_path
-    except Exception:
-        return None
 
     return None
 
@@ -150,7 +144,14 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
         return ChartExportResult(filename=filename, mime=mime, data=data)
     except Exception as e:
         if _looks_like_browser_failure(e):
-            ensure_plotly_chrome()
-            data = export_fig.to_image(format=fmt, width=width, height=height, scale=scale)
-            return ChartExportResult(filename=filename, mime=mime, data=data)
+            found = ensure_plotly_chrome()
+            if found:
+                data = export_fig.to_image(format=fmt, width=width, height=height, scale=scale)
+                return ChartExportResult(filename=filename, mime=mime, data=data)
+            raise BrowserNotAvailableError(
+                "Chart export requires Chrome or Chromium.\n"
+                "Install it (e.g. 'sudo apt install chromium') and restart the app, "
+                "or run 'plotly_get_chrome' to download a compatible version and set "
+                "BROWSER_PATH to the executable path."
+            ) from e
         raise

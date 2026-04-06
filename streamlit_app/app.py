@@ -23,7 +23,7 @@ from agile_mc.ado_sync import (
 )
 from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
-from agile_mc.chart_export import export_plotly_figure
+from agile_mc.chart_export import BrowserNotAvailableError, export_plotly_figure
 from agile_mc.pat_store import forget_pat as pat_forget
 from agile_mc.pat_store import keyring_available, load_pat, save_pat
 from agile_mc.plots import how_many_figures, when_figures
@@ -580,10 +580,15 @@ if mode.startswith("How Many"):
     fmt = st.selectbox("Download format", ["png", "svg"], index=0, key="dl_fmt_hm")
     chart_name = st.selectbox("Chart", list(figs.keys()), index=0, key="dl_chart_hm")
     if st.button("Prepare download", key="dl_btn_hm"):
-        ex = export_plotly_figure(
-            figs[chart_name], fmt=fmt, base_name=re.sub(r"[^A-Za-z0-9_-]+", "_", chart_name.lower())
-        )
-        st.download_button("Download", data=ex.data, file_name=ex.filename, mime=ex.mime, key="dl_real_hm")
+        try:
+            ex = export_plotly_figure(
+                figs[chart_name], fmt=fmt, base_name=re.sub(r"[^A-Za-z0-9_-]+", "_", chart_name.lower())
+            )
+            st.download_button("Download", data=ex.data, file_name=ex.filename, mime=ex.mime, key="dl_real_hm")
+        except BrowserNotAvailableError as e:
+            st.error(f"Chart export unavailable: {e}")
+        except Exception:
+            st.error("Chart export failed. Try a different format or check the app logs.")
 
     summary = {
         "forecast_type": "how_many",
@@ -696,14 +701,19 @@ else:
             title="When forecast calendar",
             context_lines=context_lines,
         )
-        ex = export_plotly_figure(cal_fig, fmt=cal_fmt, base_name="when_calendar")
-        st.download_button(
-            "Download calendar",
-            data=ex.data,
-            file_name=ex.filename,
-            mime=ex.mime,
-            key="dl_real_calendar",
-        )
+        try:
+            ex = export_plotly_figure(cal_fig, fmt=cal_fmt, base_name="when_calendar")
+            st.download_button(
+                "Download calendar",
+                data=ex.data,
+                file_name=ex.filename,
+                mime=ex.mime,
+                key="dl_real_calendar",
+            )
+        except BrowserNotAvailableError as e:
+            st.error(f"Chart export unavailable: {e}")
+        except Exception:
+            st.error("Chart export failed. Try a different format or check the app logs.")
 
     figs = when_figures(completion_dates)
     with st.expander("Show distribution charts", expanded=False):
@@ -714,18 +724,23 @@ else:
         fmt = st.selectbox("Download format", ["png", "svg"], index=0, key="dl_fmt_when")
         chart_name = st.selectbox("Chart", list(figs.keys()), index=0, key="dl_chart_when")
         if st.button("Prepare download", key="dl_btn_when"):
-            ex = export_plotly_figure(
-                figs[chart_name],
-                fmt=fmt,
-                base_name=re.sub(r"[^A-Za-z0-9_-]+", "_", chart_name.lower()),
-            )
-            st.download_button(
-                "Download",
-                data=ex.data,
-                file_name=ex.filename,
-                mime=ex.mime,
-                key="dl_real_when",
-            )
+            try:
+                ex = export_plotly_figure(
+                    figs[chart_name],
+                    fmt=fmt,
+                    base_name=re.sub(r"[^A-Za-z0-9_-]+", "_", chart_name.lower()),
+                )
+                st.download_button(
+                    "Download",
+                    data=ex.data,
+                    file_name=ex.filename,
+                    mime=ex.mime,
+                    key="dl_real_when",
+                )
+            except BrowserNotAvailableError as e:
+                st.error(f"Chart export unavailable: {e}")
+            except Exception:
+                st.error("Chart export failed. Try a different format or check the app logs.")
 
     summary = {
         "forecast_type": "when",
