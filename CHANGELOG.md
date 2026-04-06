@@ -10,39 +10,54 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.1.0] — 2026-04-02
+## [0.1.0] — 2026-04-06
 
-First production-ready release. The app was originally delivered as a zip with
-one-off patch scripts; this release establishes it as a properly packaged,
-tested, and deployable repository.
+First public release. The app was originally delivered as a zip with one-off patch
+scripts; this release establishes it as a properly packaged, tested, deployable, and
+security-reviewed repository.
 
 ### Added
 - `pyproject.toml` — hatchling build, `[dev]` optional dependency group, pytest
   and ruff config; package installable via `pip install -e ".[dev]"`
-- `tests/` — 56 unit tests covering `simulation.py` and `ado_sync.py` pure
-  functions; runs via `pytest` with no external services required
-- `.github/workflows/ci.yml` — GitHub Actions CI: install, `ruff format --check`,
-  `ruff check`, `pytest`
+- `tests/` — 61 unit tests covering `simulation.py`, `ado_sync.py`, and `auth.py`
+  pure functions; runs via `pytest` with no external services required
+- `.github/workflows/ci.yml` — GitHub Actions CI: install from lockfile,
+  `pip-audit` CVE scan, `ruff format --check`, `ruff check`, `pytest`
+- `.github/dependabot.yml` — weekly automated PRs for GitHub Actions SHA updates
+  and pip dependency bumps
 - `.pre-commit-config.yaml` — ruff format + lint hooks for local dev
-- `Dockerfile` — production container with Chromium for chart export
+- `Dockerfile` — production container; non-root user, Chromium for chart export,
+  base image pinned to SHA digest for reproducible builds
 - `.streamlit/config.toml` — production Streamlit server settings
-- `.env.example` — documents `MC_ADO_PASSPHRASE`, `BROWSER_PATH`,
-  `MC_DEBUG_TEAMDAYSOFF_PATCH`
-- `src/agile_mc/__version__` (`0.1.0`) exposed as `agile_mc.__version__`
-- `CHANGELOG.md`, `SECURITY.md`
+  (`headless`, `fileWatcherType = "none"`, `gatherUsageStats = false`)
+- `.env.example` — documents `MC_ADO_PASSPHRASE`, `BROWSER_PATH`, `MC_APP_PASSWORD`
+- `CHANGELOG.md`, `SECURITY.md` with full security posture documentation
+- `docs/WINDOWS_SETUP.md` — step-by-step Windows installation guide
+
+### Security
+- PAT stored in OS keyring (GNOME Keyring / macOS Keychain / Windows Credential Manager);
+  AES-256 Fernet-encrypted file fallback (`pat.enc.json`, mode 0o600)
+- Non-secret ADO settings encrypted with PBKDF2 (200k iterations) + Fernet
+- App-level shared-password gate via `MC_APP_PASSWORD` env var; comparison via
+  `hmac.compare_digest`; per-session escalating login delay (brute-force deterrent)
+- ADO org/project/team inputs validated against a character allowlist before use in URLs
+- Exception messages sanitized — HTTP status code only shown, never the response body
+- `unsafe_allow_html=True` removed; Plotly annotation text escaped via `_esc()`
+  (escapes `&`, `<`, `>`, `"`, `'`)
+- GitHub Actions workflow: `permissions: contents: read`; actions pinned to SHA digests
+- `pip-audit` scans `requirements.lock` for CVEs on every CI run
+- `sitecustomize.py` removed from the repository (was intercepting HTTP at runtime;
+  presence in `scripts/` was an accidental-activation risk via PYTHONPATH)
 
 ### Changed
-- `sys.path` hack removed from `streamlit_app/app.py`; package is now importable
-  via the installed wheel
-- `split_sample_counts` and `threshold_breakdown` moved from `app.py` to
-  `src/agile_mc/simulation.py` (now tested and importable without Streamlit)
+- `sys.path` hack removed from `streamlit_app/app.py`; package importable via wheel
+- `split_sample_counts` and `threshold_breakdown` moved to `src/agile_mc/simulation.py`
 - Hardcoded organisation/project defaults removed from sidebar
-- Duplicate `project_ratio` dict keys fixed in `save_encrypted` call and
-  `summary` export dict
+- Duplicate `project_ratio` dict keys fixed in `save_encrypted` call and summary export
+- Query field label updated with clear guidance on ADO query URL format and requirements
+- Calendar layout fixed: whitespace explosion and tile shrinkage eliminated
 - All Python files reformatted with `ruff format`
 
-### Removed / moved
-- `sitecustomize.py` removed from the repository — superseded by `ado_sync.py`
-  native team-days-off handling; removed entirely to eliminate the risk of
-  Python auto-loading it if `scripts/` were ever added to `PYTHONPATH`
-- One-off patch scripts (`apply_*.py`, `fix_*.py`, `make_*.py`) moved to `scripts/`
+### Removed
+- `sitecustomize.py` and associated `README.txt` (zip-patch delivery artefacts) removed
+- One-off patch scripts (`apply_*.py`, `fix_*.py`) moved to `scripts/` for reference
