@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import hmac
 import json
-import math
 import os
 import re
 from typing import Dict, List
@@ -617,17 +616,12 @@ else:
         st.info("No completion dates were generated.")
     else:
         cols_screen = 3
-        rows_screen = math.ceil(months_show / cols_screen)
         cal_fig = build_when_calendar_figure(
             completion_dates=completion_dates,
             sprint_label_by_date=sprint_label_by_date,
             months_to_show=months_show,
             start_date=forecast_start,
             cols=cols_screen,
-        )
-        cal_fig.update_layout(
-            margin=dict(l=10, r=10, t=60, b=10),
-            height=320 * rows_screen + 80,
         )
         st_plotly(cal_fig)
 
