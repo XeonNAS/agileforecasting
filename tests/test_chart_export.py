@@ -7,7 +7,6 @@ kaleido internals would mask the exact failure we experienced in production.
 
 from __future__ import annotations
 
-import pytest
 import plotly.graph_objects as go
 
 from agile_mc.chart_export import ChartExportResult, export_plotly_figure

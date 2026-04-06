@@ -14,19 +14,16 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
-import pandas as pd
 import pytest
 
 from agile_mc.ado_sync import (
     Sprint,
-    _SprintMetadata,
     _fetch_sprint_metadata,
     build_capacity_schedule,
     fetch_daily_throughput_from_saved_query,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -222,7 +219,6 @@ class TestFetchDailyThroughput:
     def test_multi_batch_all_items_processed(self):
         # 250 items → 2 batches; all closed on the same date
         n = 250
-        items = [self._closed_item("2026-01-15T00:00:00Z")] * 200  # batch returns 200 items
         ado = MagicMock()
         ado.wiql_query_by_id.return_value = {"workItems": [{"id": i} for i in range(n)]}
         # First batch returns 200 items, second returns 50

@@ -22,9 +22,9 @@ from agile_mc.ado_sync import (
     fetch_sprints,
     weekday_indexes_from_team_settings,
 )
+from agile_mc.app_logging import LOG_LEVEL_OPTIONS, configure_logging, load_log_level, save_log_level
 from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
-from agile_mc.app_logging import LOG_LEVEL_OPTIONS, configure_logging, load_log_level, save_log_level
 from agile_mc.chart_export import BrowserNotAvailableError, export_plotly_figure
 from agile_mc.pat_store import forget_pat as pat_forget
 from agile_mc.pat_store import keyring_available, load_pat, save_pat
