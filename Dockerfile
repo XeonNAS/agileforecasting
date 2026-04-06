@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Pin to a specific digest so builds are reproducible and immune to tag mutation.
+# To update: docker manifest inspect python:3.12-slim, then replace the digest below.
+FROM python:3.12-slim@sha256:3d5ed973e45820f5ba5e46bd065bd88b3a504ff0724d85980dcd05eab361fcf4
 
 # Chromium is required by Kaleido for PNG/SVG chart export.
 # Skip this block if you don't need chart downloads.

@@ -11,11 +11,13 @@ This document summarises the security posture of the app and known risks to addr
 | PAT storage | Saved to OS credential store (GNOME Keyring / macOS Keychain / Windows Credential Manager) via `keyring`. Falls back to a separate AES-256 Fernet-encrypted file (`pat.enc.json`, mode 0o600) when the OS keyring is unavailable. PAT is **never** stored in plaintext, in the non-secret settings file, in logs, or in exports. |
 | PAT in session state | Present only during the render cycle of a sync. Cleared from `st.session_state` via a deferred-flag pattern immediately after a successful sync; retained on error so the user can retry without re-entering it. Error messages never include the PAT value. |
 | Non-secret settings | Org, project, team, query stored encrypted on disk with PBKDF2-derived Fernet key; passphrase never written to disk. |
-| HTML rendering | `unsafe_allow_html=True` is no longer used; tables use `st.dataframe`, calendar uses Plotly heatmap |
-| App password gate | Optional `MC_APP_PASSWORD` env var blocks all content behind a login form; uses `hmac.compare_digest`; stores only `_authenticated` boolean in session state |
-| Bind address | Local `streamlit run` binds to `localhost` only (`.streamlit/config.toml` leaves `address` unset); Docker overrides to `0.0.0.0` via `STREAMLIT_SERVER_ADDRESS` env var |
-| Streamlit production settings | `headless = true`, `fileWatcherType = "none"`, `gatherUsageStats = false` set in `.streamlit/config.toml` |
-| Environment variables | `.env.example` documents all env vars; `.gitignore` excludes `.env` and `secrets.toml` |
+| HTML rendering | `unsafe_allow_html=True` is no longer used; tables use `st.dataframe`, calendar uses Plotly heatmap. ADO-derived text in Plotly annotations is escaped via `_esc()` in `calendar_export.py`. |
+| App password gate | Optional `MC_APP_PASSWORD` env var blocks all content behind a login form; uses `hmac.compare_digest`; per-session failed-attempt counter with escalating delay deters brute force; stores only `_authenticated` boolean in session state. |
+| Input validation | Org, project, and team fields are validated against an allowlist of safe characters before use in ADO API URLs. |
+| Bind address | Local `streamlit run` binds to `localhost` only (`.streamlit/config.toml` leaves `address` unset); Docker overrides to `0.0.0.0` via `STREAMLIT_SERVER_ADDRESS` env var. |
+| Streamlit production settings | `headless = true`, `fileWatcherType = "none"`, `gatherUsageStats = false` set in `.streamlit/config.toml`. |
+| Environment variables | `.env.example` documents all env vars; `.gitignore` excludes `.env` and `secrets.toml`. |
+| Dependency pinning | `requirements.lock` pins every transitive runtime dependency to an exact version via `pip-compile`. CI runs `pip-audit` against the lockfile on every push. |
 
 ---
 
@@ -38,14 +40,14 @@ that flows into Plotly annotation and text fields is escaped via a dedicated
 `_esc()` helper in `calendar_export.py`.
 
 ### 3. Authentication layer (low for shared team use; high for public deployment)
-A shared-password gate is now implemented via the `MC_APP_PASSWORD` environment
-variable. When set, all app content is blocked behind a login form and a
-`_authenticated` boolean is stored in session state. A Sign-out button is shown
-in the sidebar. The comparison uses `hmac.compare_digest` to avoid timing attacks.
+A shared-password gate is implemented via the `MC_APP_PASSWORD` environment
+variable. When set, all app content is blocked behind a login form with a
+per-session failed-attempt counter and an escalating delay on failed attempts.
+The comparison uses `hmac.compare_digest` to avoid timing attacks.
 
 **Limitations of this gate:**
 - It is a shared secret, not per-user authentication. Anyone with the password can use the app.
-- It provides no audit trail, rate limiting, or brute-force protection.
+- It provides no audit trail or brute-force lockout (only a delay per session).
 - Session state is per-browser tab; another tab in the same browser is a fresh session.
 
 **Recommendation for public or regulated deployments:** place the app behind an
@@ -64,15 +66,20 @@ keyring is used (default on desktop installations), no PAT file is written at al
 The app requests whatever the PAT can access. Follow least-privilege: scope the PAT
 to Work Items (Read) and Work (Read) only. See README for the exact scopes.
 
-### 6. Log file created in `cwd` (low)
-`sitecustomize.py` (now in `scripts/`, inactive) wrote `mc_teamdaysoff_patch.log`
-to the working directory. It no longer runs, but if re-activated, the log contains
-URL paths (not credentials). Add `*.log` to `.gitignore` (already present).
+### 6. Encryption passphrase in session state (low)
+The passphrase entered by the user (or pre-loaded from `MC_ADO_PASSPHRASE`) is
+stored in `st.session_state["cfg_passphrase"]` for the lifetime of the browser
+session so that settings can be auto-saved on each ADO refresh. This is a wider
+exposure window than the PAT (which is cleared after each sync). Risk is limited
+to session-state inspection scenarios (crash dump, future Streamlit debug
+vulnerability). `*.log` files are in `.gitignore`. Mitigation: run behind an
+authenticated reverse proxy or on a private network.
 
-### 7. Dependency pinning (resolved)
+### 7. Dependency pinning and CVE scanning (resolved)
 `requirements.lock` pins every transitive runtime dependency to an exact version,
 generated by `pip-compile` from `pyproject.toml`. Docker installs from
-`requirements.lock`. CI installs from `requirements.lock` before running tests.
+`requirements.lock`. CI installs from `requirements.lock` and then runs
+`pip-audit -r requirements.lock` before tests on every push.
 Regenerate with `pip-compile pyproject.toml --output-file requirements.lock`
 whenever `pyproject.toml` changes.
 
@@ -80,10 +87,11 @@ whenever `pyproject.toml` changes.
 
 ## Recommended pre-production actions
 
-- [x] Add shared-password gate (`MC_APP_PASSWORD`) for lightweight internal deployments
+- [x] Add shared-password gate (`MC_APP_PASSWORD`) with per-session failed-attempt delay
 - [ ] Place app behind an authenticated reverse proxy or restrict network access (required for public deployments)
 - [x] Generate a pinned requirements lockfile (`requirements.lock` via `pip-compile`)
-- [ ] Review sprint name / ADO value interpolation before any HTML template changes
+- [x] Add `pip-audit` CVE scanning to CI
+- [x] Sprint name / ADO value escaping reviewed and completed (`_esc()` in `calendar_export.py`)
 - [x] Set `headless = true`, `fileWatcherType = "none"`, `gatherUsageStats = false` in `.streamlit/config.toml`
 - [x] Local `streamlit run` defaults to `localhost`; Docker binds `0.0.0.0` via `STREAMLIT_SERVER_ADDRESS` env var
 - [x] PAT least-privilege scopes documented in README (Work Items: Read, Work: Read)
@@ -93,4 +101,11 @@ whenever `pyproject.toml` changes.
 
 ## Reporting vulnerabilities
 
-Open a GitHub issue marked **[SECURITY]** or contact the maintainer directly.
+Please use GitHub's private Security Advisory feature so the issue can be
+reviewed and a fix prepared before any public disclosure:
+
+**https://github.com/XeonNAS/agileforecasting/security/advisories/new**
+
+Do **not** open a public GitHub issue for unpatched security vulnerabilities —
+doing so discloses the vulnerability before a fix is available.
+For questions about existing mitigations or general security feedback, a public issue is fine.
