@@ -14,7 +14,14 @@ from .simulation import completion_cdf_by_date
 
 def _esc(text: str) -> str:
     """Escape HTML special characters for Plotly annotation/text fields."""
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#x27;")
+    )
 
 
 def _month_last_day(year: int, month: int) -> dt.date:

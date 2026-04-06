@@ -5,7 +5,10 @@ import hmac
 import json
 import os
 import re
+import time
 from typing import Dict, List
+
+import requests
 
 import numpy as np
 import pandas as pd
@@ -119,10 +122,18 @@ if _app_password is not None and not st.session_state.get("_authenticated"):
         _entered = st.text_input("Password", type="password")
         _submitted = st.form_submit_button("Sign in")
     if _submitted:
-        if hmac.compare_digest(_entered, _app_password):
+        # Escalating delay on repeated failures: 0s, 2s, 4s, 8s, … capped at 30s.
+        # Runs server-side before the password check, so every guess costs at least
+        # this much time regardless of how fast the client submits.
+        _attempts = st.session_state.get("_login_attempts", 0)
+        if _attempts > 0:
+            time.sleep(min(2 ** _attempts, 30))
+        if hmac.compare_digest(_entered or "", _app_password):
             st.session_state["_authenticated"] = True
+            st.session_state.pop("_login_attempts", None)
             st.rerun()
         else:
+            st.session_state["_login_attempts"] = _attempts + 1
             st.error("Incorrect password.")
     st.stop()
 
@@ -155,8 +166,8 @@ with st.sidebar:
                         st.session_state[f"cfg_{k}"] = v
                     st.success("Loaded saved settings.")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Could not load saved settings: {e}")
+                except Exception:
+                    st.error("Could not load saved settings. Check that your passphrase is correct.")
 
     with col2:
         if st.button("Save now", key="btn_save_now"):
@@ -178,8 +189,8 @@ with st.sidebar:
                         st.session_state["cfg_passphrase"],
                     )
                     st.success("Saved settings (encrypted). PAT is stored separately via the keyring/PAT controls.")
-                except Exception as e:
-                    st.error(f"Could not save: {e}")
+                except Exception:
+                    st.error("Could not save settings. Check your passphrase and try again.")
 
     with col3:
         if st.button("Forget saved", key="btn_forget_saved"):
@@ -325,9 +336,31 @@ passphrase2: str = st.session_state.get("cfg_passphrase", "")
 
 data_already_loaded = "ado_loaded" in st.session_state
 
+# Allowlist patterns for ADO connection fields.
+# Org names: letters, digits, and hyphens (Azure DevOps organisation naming rules).
+# Project / team names: letters, digits, spaces, hyphens, underscores, and dots.
+_ADO_ORG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]*$")
+_ADO_FIELD_RE = re.compile(r"^[A-Za-z0-9][\w .\-]*$")
+
+
+def _ado_field_error(name: str, value: str, pattern: re.Pattern) -> str | None:
+    """Return an error string if *value* does not match *pattern*, else None."""
+    if not pattern.match(value):
+        return f"{name} contains unexpected characters. Check the value and try again."
+    return None
+
+
 if refresh:
     if not (org and project and team and pat and query):
         st.warning("All connection fields — including PAT and a saved query URL — are required to refresh.")
+        if not data_already_loaded:
+            st.stop()
+    elif _err := (
+        _ado_field_error("Org", org, _ADO_ORG_RE)
+        or _ado_field_error("Project", project, _ADO_FIELD_RE)
+        or _ado_field_error("Team", team, _ADO_FIELD_RE)
+    ):
+        st.warning(_err)
         if not data_already_loaded:
             st.stop()
     else:
@@ -431,8 +464,16 @@ if refresh:
             # The flag is consumed before the form on the next rerun.
             st.session_state["_clear_pat_on_next_run"] = True
 
+        except requests.HTTPError as e:
+            _status = e.response.status_code if e.response is not None else "unknown"
+            st.error(
+                f"ADO request failed (HTTP {_status}). "
+                "Check your Org, Project, Team, PAT, and Query settings."
+            )
+            if not data_already_loaded:
+                st.stop()
         except Exception as e:
-            st.error(f"ADO sync failed: {e}")
+            st.error(f"ADO sync failed ({type(e).__name__}). Check your connection settings.")
             if not data_already_loaded:
                 st.stop()
 
