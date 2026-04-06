@@ -8,10 +8,9 @@ import re
 import time
 from typing import Dict, List
 
-import requests
-
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 from agile_mc.ado_client import AdoClient, AdoRef
@@ -25,9 +24,9 @@ from agile_mc.ado_sync import (
 from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
 from agile_mc.chart_export import export_plotly_figure
-from agile_mc.plots import how_many_figures, when_figures
 from agile_mc.pat_store import forget_pat as pat_forget
 from agile_mc.pat_store import keyring_available, load_pat, save_pat
+from agile_mc.plots import how_many_figures, when_figures
 from agile_mc.secure_store import forget as secure_forget
 from agile_mc.secure_store import load_encrypted, save_encrypted
 from agile_mc.simulation import (
@@ -127,7 +126,7 @@ if _app_password is not None and not st.session_state.get("_authenticated"):
         # this much time regardless of how fast the client submits.
         _attempts = st.session_state.get("_login_attempts", 0)
         if _attempts > 0:
-            time.sleep(min(2 ** _attempts, 30))
+            time.sleep(min(2**_attempts, 30))
         if hmac.compare_digest(_entered or "", _app_password):
             st.session_state["_authenticated"] = True
             st.session_state.pop("_login_attempts", None)
@@ -214,8 +213,7 @@ with st.sidebar:
         st.caption("Your PAT is stored in the OS credential store (keyring) and loaded automatically.")
     else:
         st.caption(
-            "OS keyring not available on this machine. "
-            "PAT can be saved encrypted to disk — enter a passphrase above."
+            "OS keyring not available on this machine. PAT can be saved encrypted to disk — enter a passphrase above."
         )
 
     st.toggle(
@@ -226,8 +224,7 @@ with st.sidebar:
             "When on, your PAT is saved to the OS credential store after a successful sync "
             "and loaded automatically on the next run."
             if _kr_ok
-            else "When on, your PAT is saved to an encrypted file after sync. "
-            "Requires the passphrase above to be set."
+            else "When on, your PAT is saved to an encrypted file after sync. Requires the passphrase above to be set."
         ),
     )
 
@@ -466,10 +463,7 @@ if refresh:
 
         except requests.HTTPError as e:
             _status = e.response.status_code if e.response is not None else "unknown"
-            st.error(
-                f"ADO request failed (HTTP {_status}). "
-                "Check your Org, Project, Team, PAT, and Query settings."
-            )
+            st.error(f"ADO request failed (HTTP {_status}). Check your Org, Project, Team, PAT, and Query settings.")
             if not data_already_loaded:
                 st.stop()
         except Exception as e:

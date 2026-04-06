@@ -19,6 +19,7 @@ Platform notes:
   macOS  — uses macOS Keychain; works out of the box.
   Windows — uses Windows Credential Manager; works out of the box.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,6 +36,7 @@ _DEFAULT_PROFILE = "default"
 # ---------------------------------------------------------------------------
 # Keyring helpers  (each swallows all exceptions so callers stay simple)
 # ---------------------------------------------------------------------------
+
 
 def _kr_set(pat: str, profile: str) -> bool:
     """Write PAT to OS keyring.  Returns True only after a verified round-trip."""
@@ -77,6 +79,7 @@ def _kr_delete(profile: str) -> bool:
 # ---------------------------------------------------------------------------
 # Encrypted-file fallback
 # ---------------------------------------------------------------------------
+
 
 def _pat_enc_path():
     from agile_mc.secure_store import default_paths
@@ -126,6 +129,7 @@ def _file_delete() -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def keyring_available() -> bool:
     """
     Return True if the OS keyring can durably store a credential.
@@ -164,9 +168,7 @@ def save_pat(pat: str, *, profile: str = _DEFAULT_PROFILE, passphrase: Optional[
     if passphrase:
         _file_save(pat, passphrase)
         return "file"
-    raise RuntimeError(
-        "OS keyring unavailable and no passphrase provided for the encrypted-file fallback."
-    )
+    raise RuntimeError("OS keyring unavailable and no passphrase provided for the encrypted-file fallback.")
 
 
 def load_pat(*, profile: str = _DEFAULT_PROFILE, passphrase: Optional[str] = None) -> Optional[str]:

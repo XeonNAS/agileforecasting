@@ -112,9 +112,9 @@ def build_when_calendar_figure(
     # inter-row gap.  0.06 (6 %) replaces the original 0.18 (18 %) which made
     # the total gap space 54 % of the figure for 4 rows, leaving tiles too small.
     _V_SPACING = 0.06
-    _H_SPACING = 0.04   # horizontal gap between columns (unchanged)
-    _TILE_H_PX = 44     # minimum pixel height per heatmap week row (6 per month)
-    _TILE_W_PX = 60     # minimum pixel width per day column (7 per month)
+    _H_SPACING = 0.04  # horizontal gap between columns (unchanged)
+    _TILE_H_PX = 44  # minimum pixel height per heatmap week row (6 per month)
+    _TILE_W_PX = 60  # minimum pixel width per day column (7 per month)
     _L, _R, _B = 16, 16, 16
 
     # ── Compute paper dimensions that guarantee minimum tile sizes ────────
@@ -263,17 +263,17 @@ def build_when_calendar_figure(
         fig.add_annotation(
             text=f"<b>{month_title}</b>",
             x=(xdom[0] + xdom[1]) / 2.0,
-            y=ydom[1] + _ann_offset,   # adaptive offset — stays within inter-row gap
+            y=ydom[1] + _ann_offset,  # adaptive offset — stays within inter-row gap
             xref="paper",
             yref="paper",
             xanchor="center",
             yanchor="bottom",
             showarrow=False,
-            font=dict(size=12),        # slightly smaller than before (was 14) for compact fit
+            font=dict(size=12),  # slightly smaller than before (was 14) for compact fit
             bgcolor="rgba(255,255,255,0.98)",
             bordercolor="rgba(0,0,0,0.10)",
             borderwidth=1,
-            borderpad=3,               # was 4
+            borderpad=3,  # was 4
         )
 
     # ── Export header (title + context block) ─────────────────────────────
