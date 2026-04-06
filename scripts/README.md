@@ -1,6 +1,6 @@
 # scripts/
 
-## sitecustomize.py — retired
+## sitecustomize.py — deleted
 
 This was a Python `sitecustomize` runtime patch that did two things:
 
@@ -11,8 +11,9 @@ This was a Python `sitecustomize` runtime patch that did two things:
    `daysOff` arrays — no longer needed; `ado_sync.build_capacity_schedule()` calls
    `fetch_team_days_off_for_sprint()` natively and merges the data itself.
 
-Kept here for reference. Do **not** move it back to the repo root — Python's `site`
-module auto-loads `sitecustomize.py` from `sys.path` on startup.
+The file has been removed from the repository. Python's `site` module auto-loads
+`sitecustomize.py` from `sys.path` on startup, which made keeping it in the repo
+a safety risk (accidental activation if `scripts/` were added to `PYTHONPATH`).
 
 ## apply_*.py / fix_*.py — retired
 

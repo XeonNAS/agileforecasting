@@ -42,6 +42,7 @@ tested, and deployable repository.
 - All Python files reformatted with `ruff format`
 
 ### Removed / moved
-- `sitecustomize.py` moved to `scripts/` — superseded by `ado_sync.py` native
-  team-days-off handling; no longer risks Python auto-loading it from repo root
+- `sitecustomize.py` removed from the repository — superseded by `ado_sync.py`
+  native team-days-off handling; removed entirely to eliminate the risk of
+  Python auto-loading it if `scripts/` were ever added to `PYTHONPATH`
 - One-off patch scripts (`apply_*.py`, `fix_*.py`, `make_*.py`) moved to `scripts/`
