@@ -139,6 +139,19 @@ if _app_password is not None and not st.session_state.get("_authenticated"):
 st.title("AgileForecasting")
 st.markdown("by XeonNAS  ·  [github.com/XeonNAS/agileforecasting](https://github.com/XeonNAS/agileforecasting)")
 
+# ---- Initialise config session-state keys before any widget is created.
+# This prevents the "widget created with a default value but also had its
+# value set via the Session State API" warning that fires when widgets use
+# both key= and value=st.session_state.get(…) simultaneously.
+st.session_state.setdefault("cfg_org", "")
+st.session_state.setdefault("cfg_project", "")
+st.session_state.setdefault("cfg_team", "")
+st.session_state.setdefault("cfg_query", "")
+st.session_state.setdefault("cfg_done_field", "AUTO")
+st.session_state.setdefault("cfg_history_days", 180)
+st.session_state.setdefault("cfg_seed", "")
+st.session_state.setdefault("cfg_project_ratio", 80)
+
 # ---- Sidebar
 with st.sidebar:
     if _app_password is not None:
@@ -252,13 +265,12 @@ with st.sidebar:
             st.session_state["cfg_pat"] = _pre_pat
 
     with st.form("ado_connection"):
-        st.text_input("Org", value=st.session_state.get("cfg_org", ""), key="cfg_org")
-        st.text_input("Project", value=st.session_state.get("cfg_project", ""), key="cfg_project")
-        st.text_input("Team", value=st.session_state.get("cfg_team", ""), key="cfg_team")
+        st.text_input("Org", key="cfg_org")
+        st.text_input("Project", key="cfg_project")
+        st.text_input("Team", key="cfg_team")
         st.text_input("PAT", type="password", key="cfg_pat")
         st.text_input(
             "Query",
-            value=st.session_state.get("cfg_query", ""),
             key="cfg_query",
             placeholder="https://dev.azure.com/{org}/{project}/_queries/query/{id}/",
             help=(
@@ -284,7 +296,6 @@ with st.sidebar:
             "History days",
             min_value=30,
             max_value=730,
-            value=int(st.session_state.get("cfg_history_days", 180)),
             step=30,
             key="cfg_history_days",
         )
@@ -299,13 +310,12 @@ with st.sidebar:
         "Project work %",
         min_value=0,
         max_value=100,
-        value=int(st.session_state.get("cfg_project_ratio", 80)),
         step=5,
         key="cfg_project_ratio",
         help="Percentage of team capacity spent on backlog/project work. The remainder is treated as BAU/non-project work.",
     )
     st.number_input("Simulations", min_value=1000, max_value=200000, value=10000, step=1000, key="cfg_sims")
-    st.text_input("Random seed (optional)", value=st.session_state.get("cfg_seed", ""), key="cfg_seed")
+    st.text_input("Random seed (optional)", key="cfg_seed")
 
     st.date_input("Forecast start date", value=dt.date.today(), key="cfg_forecast_start")
 

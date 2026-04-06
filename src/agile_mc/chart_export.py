@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
+import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import plotly
 import plotly.graph_objects as go
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserNotAvailableError(RuntimeError):
@@ -17,6 +22,15 @@ class ChartExportResult:
     filename: str
     mime: str
     data: bytes
+
+
+def _kaleido_version() -> str:
+    try:
+        import kaleido
+
+        return getattr(kaleido, "__version__", "unknown (kaleido installed)")
+    except ImportError:
+        return "not installed"
 
 
 def _looks_like_browser_failure(exc: Exception) -> bool:
@@ -33,6 +47,7 @@ def _looks_like_browser_failure(exc: Exception) -> bool:
             "chromium",
             "chrome",
             "browser seemed to close",
+            "chromenotfounderror",
         )
     )
 
@@ -58,15 +73,32 @@ def _find_chrome_on_path() -> Optional[str]:
 
 
 def ensure_plotly_chrome() -> Optional[str]:
-    """Ensure a Chrome/Chromium binary is available for Kaleido image export."""
+    """Ensure a Chrome/Chromium binary is available for Kaleido image export.
+
+    Checks BROWSER_PATH env var, then PATH, then attempts to auto-download
+    via kaleido's bundled downloader (kaleido v1+).
+    """
     existing = os.environ.get("BROWSER_PATH")
     if existing and os.path.exists(existing):
+        logger.debug("Chrome found via BROWSER_PATH: %s", existing)
         return existing
 
     found = _find_chrome_on_path()
     if found:
         os.environ["BROWSER_PATH"] = found
+        logger.debug("Chrome found on PATH: %s", found)
         return found
+
+    # kaleido v1+ ships its own downloader — try it before giving up.
+    try:
+        import kaleido
+
+        logger.info("Chrome not found on PATH; attempting kaleido.get_chrome_sync() download…")
+        path = str(kaleido.get_chrome_sync())
+        logger.info("Chrome downloaded to: %s", path)
+        return path
+    except Exception as exc:
+        logger.warning("kaleido.get_chrome_sync() failed: %s", exc)
 
     return None
 
@@ -137,21 +169,69 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
     mime = "image/png" if fmt == "png" else "image/svg+xml"
     filename = f"{base_name}.{fmt}"
 
+    chart_title = ""
+    try:
+        chart_title = str(fig.layout.title.text or "")
+    except Exception:
+        pass
+
     export_fig, width, height, scale = _prepared_export_figure(fig, fmt)
+
+    logger.info(
+        "export_plotly_figure: fmt=%s filename=%s title=%r fig_type=%s "
+        "width=%d height=%d scale=%d plotly=%s kaleido=%s",
+        fmt,
+        filename,
+        chart_title,
+        type(fig).__name__,
+        width,
+        height,
+        scale,
+        plotly.__version__,
+        _kaleido_version(),
+    )
 
     try:
         data = export_fig.to_image(format=fmt, width=width, height=height, scale=scale)
+        logger.info("export_plotly_figure: success — %d bytes returned", len(data))
         return ChartExportResult(filename=filename, mime=mime, data=data)
     except Exception as e:
         if _looks_like_browser_failure(e):
+            logger.warning(
+                "export_plotly_figure: browser/Chrome failure (%s: %s); attempting Chrome auto-install",
+                type(e).__name__,
+                e,
+            )
             found = ensure_plotly_chrome()
             if found:
-                data = export_fig.to_image(format=fmt, width=width, height=height, scale=scale)
-                return ChartExportResult(filename=filename, mime=mime, data=data)
+                logger.info("export_plotly_figure: retrying with Chrome at %s", found)
+                try:
+                    data = export_fig.to_image(format=fmt, width=width, height=height, scale=scale)
+                    logger.info("export_plotly_figure: retry success — %d bytes returned", len(data))
+                    return ChartExportResult(filename=filename, mime=mime, data=data)
+                except Exception as retry_exc:
+                    logger.error(
+                        "export_plotly_figure: retry failed — %s: %s\n%s",
+                        type(retry_exc).__name__,
+                        retry_exc,
+                        traceback.format_exc(),
+                    )
+                    raise
+            logger.error(
+                "export_plotly_figure: Chrome not found and auto-install failed — %s: %s",
+                type(e).__name__,
+                e,
+            )
             raise BrowserNotAvailableError(
                 "Chart export requires Chrome or Chromium.\n"
                 "Install it (e.g. 'sudo apt install chromium') and restart the app, "
                 "or run 'plotly_get_chrome' to download a compatible version and set "
                 "BROWSER_PATH to the executable path."
             ) from e
+        logger.error(
+            "export_plotly_figure: unexpected error — %s: %s\n%s",
+            type(e).__name__,
+            e,
+            traceback.format_exc(),
+        )
         raise
