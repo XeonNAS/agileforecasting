@@ -35,13 +35,7 @@ from agile_mc.simulation import (
 
 
 def st_plotly(fig):
-    import inspect
-
-    sig = inspect.signature(st.plotly_chart)
-    if "width" in sig.parameters:
-        st.plotly_chart(fig, width="stretch")
-    else:
-        st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_df_expander(title: str, df: pd.DataFrame, expanded: bool = False):
@@ -49,7 +43,7 @@ def render_df_expander(title: str, df: pd.DataFrame, expanded: bool = False):
         if df is None or df.empty:
             st.caption("(empty)")
         else:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
 
 
 def _to_date_series(series: pd.Series) -> pd.Series:
@@ -113,12 +107,12 @@ def months_needed_to_cover_p95(completion_dates: List[dt.date], start_date: dt.d
     return months
 
 
-st.set_page_config(page_title="Agile Monte Carlo (ADO-first)", layout="wide")
+st.set_page_config(page_title="AgileForecasting", layout="wide")
 
 # ---- App-level password gate (optional — set MC_APP_PASSWORD to enable)
 _app_password = get_app_password()
 if _app_password is not None and not st.session_state.get("_authenticated"):
-    st.title("Agile Monte Carlo")
+    st.title("AgileForecasting")
     st.caption("Sign in to continue.")
     with st.form("login"):
         _entered = st.text_input("Password", type="password")
@@ -131,8 +125,8 @@ if _app_password is not None and not st.session_state.get("_authenticated"):
             st.error("Incorrect password.")
     st.stop()
 
-st.title("Agile Monte Carlo (Azure DevOps)")
-st.caption("Monte Carlo forecasts based on Azure DevOps throughput and iteration capacity.")
+st.title("AgileForecasting")
+st.markdown("by XeonNAS  ·  [github.com/XeonNAS/agileforecasting](https://github.com/XeonNAS/agileforecasting)")
 
 # ---- Sidebar
 with st.sidebar:

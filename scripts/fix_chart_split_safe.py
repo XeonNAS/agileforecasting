@@ -39,7 +39,7 @@ fig.update_layout(
     yaxis_title="Probability",
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 """
 
     # Replace ONLY first chart occurrence
