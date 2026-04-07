@@ -31,6 +31,8 @@ jobs:
           pip install -r requirements.lock
 
       - name: Audit dependencies for known CVEs
+        # pip-audit runs only on Linux because requirements.lock is Linux-generated.
+        # Windows users install from requirements.txt instead (see test-windows job).
         run: |
           pip install pip-audit
           pip-audit -r requirements.lock
@@ -46,3 +48,41 @@ jobs:
 
       - name: Run tests
         run: pytest --tb=short
+
+  test-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # Use requirements.txt, not requirements.lock.  The lock file is generated on
+        # Linux and includes Linux-only keyring backend packages (secretstorage,
+        # jeepney) even though they now carry sys_platform markers.  requirements.txt
+        # lets pip resolve the correct Windows-appropriate dependencies from scratch.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install package and dev tools
+        run: pip install -e ".[dev]"
+
+      - name: Check formatting with ruff
+        run: ruff format --check src/ tests/ streamlit_app/
+
+      - name: Lint with ruff
+        run: ruff check src/ tests/ streamlit_app/
+
+      - name: Run tests
+        # test_chart_export.py exercises the full Kaleido/Chrome render pipeline.
+        # It works on ubuntu-latest (covered in the test job above) but is excluded
+        # from this job because downloading Chrome in a Windows CI runner adds several
+        # minutes and is unreliable in restricted runner environments.
+        # Windows-specific chart_export logic (Chrome discovery, error messages) is
+        # unit-tested in test_windows_compat.py, which runs here.
+        run: pytest --tb=short --ignore=tests/test_chart_export.py

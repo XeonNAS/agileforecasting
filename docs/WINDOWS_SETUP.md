@@ -292,11 +292,19 @@ Always reinstall dependencies after pulling, in case new packages were added.
 
 | What | Where on Windows |
 |---|---|
-| Saved ADO settings (org, project, team, query) — encrypted | `C:\Users\<YourName>\.config\agileforecasting\ado_settings.enc.json` |
+| Saved ADO settings (org, project, team, query) — encrypted | `%APPDATA%\agileforecasting\ado_settings.enc.json` |
 | Saved PAT — OS keyring | Windows Credential Manager (search "agileforecasting" in Credential Manager) |
-| PAT fallback when keyring unavailable — encrypted | `C:\Users\<YourName>\.config\agileforecasting\pat.enc.json` |
+| PAT fallback when keyring unavailable — encrypted | `%APPDATA%\agileforecasting\pat.enc.json` |
 
-Both files are encrypted. Your encryption passphrase is never written to disk.
+`%APPDATA%` is typically `C:\Users\<YourName>\AppData\Roaming`.
+
+Both files are encrypted with AES-256 (Fernet). Your encryption passphrase is
+never written to disk.
+
+> **Note on file permissions:** on Linux and macOS the app restricts these files
+> to the owner account (chmod 600).  On Windows, file-system ACLs are managed
+> by the OS rather than Unix permission bits; the encryption itself is the
+> primary protection on all platforms.
 
 ---
 
@@ -322,6 +330,13 @@ python -c "from agile_mc.pat_store import forget_pat; forget_pat(); print('done'
 ### Remove all saved settings
 
 Delete the config folder:
+
+```powershell
+Remove-Item -Recurse -Force "$env:APPDATA\agileforecasting"
+```
+
+If you used a version of the app released before April 2026 and have settings
+at the old location, remove that too:
 
 ```powershell
 Remove-Item -Recurse -Force "$env:USERPROFILE\.config\agileforecasting"
@@ -484,18 +499,50 @@ git clone https://github.com/XeonNAS/agileforecasting.git
 
 ### Chart export (PNG/SVG) does not work
 
-Chart export uses **Kaleido**, which bundles its own Chromium binary. No
-separate Chrome installation is required. If export fails, ensure the venv is
-active and that `kaleido` is installed:
+Chart export uses **Kaleido + Choreographer**, which automatically downloads
+and manages its own Chromium binary. No separate Chrome installation is
+normally required on first export.
+
+**Automatic browser discovery order:**
+
+1. `BROWSER_PATH` environment variable (if set and valid)
+2. Chrome/Chromium found on the system `PATH`
+3. Common Windows install locations:
+   - `%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe`
+   - `C:\Program Files\Google\Chrome\Application\chrome.exe`
+   - `C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`
+4. Kaleido's bundled Chromium (downloaded on first export)
+
+If export fails, check that `kaleido` is installed:
 
 ```powershell
 pip show kaleido
 ```
 
-If your organisation blocks Chromium execution, set the `BROWSER_PATH`
-environment variable to point to an allowed Chrome or Chromium installation:
+If your organisation's policy blocks Chromium from running, point the app at
+an allowed installation:
 
 ```powershell
+# Current session only
 $env:BROWSER_PATH = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 streamlit run streamlit_app\app.py
 ```
+
+To persist the setting across sessions:
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+    "BROWSER_PATH",
+    "C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "User"
+)
+```
+
+To download the kaleido bundled browser manually and obtain its path, activate
+the venv and run:
+
+```powershell
+plotly_get_chrome
+```
+
+Then set `BROWSER_PATH` to the path it prints.

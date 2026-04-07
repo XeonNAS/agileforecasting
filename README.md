@@ -134,12 +134,21 @@ python -c "from agile_mc.pat_store import forget_pat; forget_pat(); print('done'
 On servers without a running keyring daemon, the toggle label changes to
 **Save PAT (encrypted file, needs passphrase)**. Enter your encryption
 passphrase in the field above; the PAT is then saved to a separate
-AES-256 Fernet-encrypted file:
+AES-256 Fernet-encrypted file.
 
-```
-~/.config/agileforecasting/pat.enc.json   ← PAT (encrypted, 0o600)
-~/.config/agileforecasting/ado_settings.enc.json  ← non-secret settings
-```
+File locations by platform:
+
+| Platform | Path |
+|---|---|
+| Linux / macOS | `~/.config/agileforecasting/pat.enc.json` |
+| Windows | `%APPDATA%\agileforecasting\pat.enc.json` |
+
+Non-secret settings are stored alongside:
+
+| Platform | Path |
+|---|---|
+| Linux / macOS | `~/.config/agileforecasting/ado_settings.enc.json` |
+| Windows | `%APPDATA%\agileforecasting\ado_settings.enc.json` |
 
 The passphrase is never written to disk. Set `MC_ADO_PASSPHRASE` to avoid
 typing it on every start.
@@ -167,9 +176,10 @@ Create the PAT with only these scopes:
 Non-secret settings (org, project, team, query, history window) are encrypted
 with PBKDF2-derived Fernet (AES-256-CBC) and saved to:
 
-```
-~/.config/agileforecasting/ado_settings.enc.json
-```
+| Platform | Path |
+|---|---|
+| Linux / macOS | `~/.config/agileforecasting/ado_settings.enc.json` |
+| Windows | `%APPDATA%\agileforecasting\ado_settings.enc.json` |
 
 Set `MC_ADO_PASSPHRASE` to pre-fill the passphrase and enable auto-save:
 
@@ -297,8 +307,14 @@ ruff check src/ tests/
 
 ### Dependency lockfile
 
-`requirements.lock` pins every transitive runtime dependency. Docker and CI
-install from it. To regenerate after changing `pyproject.toml`:
+`requirements.lock` pins every transitive runtime dependency for Linux.
+Docker and the Ubuntu CI job install from it.
+
+> **Windows note:** `requirements.lock` is generated on Linux. Windows users
+> should install from `requirements.txt` instead (the Windows CI job does this
+> automatically). Do not run `pip install -r requirements.lock` on Windows.
+
+To regenerate after changing `pyproject.toml` (run on Linux):
 
 ```bash
 source .venv/bin/activate

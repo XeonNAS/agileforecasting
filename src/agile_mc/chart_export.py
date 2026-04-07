@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -81,16 +82,34 @@ def _find_non_snap_chrome() -> Optional[str]:
         return p
 
     # Fixed-path fallback (covers installations not on PATH)
-    for fixed in (
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-    ):
-        if os.path.exists(fixed) and not _is_snap_path(fixed):
-            logger.debug("browser candidate %-28s  [OK — fixed path]", fixed)
-            return fixed
+    if sys.platform == "win32":
+        # Windows: check common per-machine and per-user Chrome/Chromium locations.
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        win_candidates: list[str] = []
+        if local_app_data:
+            # Per-user install (most common on Windows)
+            win_candidates.append(os.path.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"))
+        win_candidates += [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Chromium\Application\chrome.exe",
+            r"C:\Program Files (x86)\Chromium\Application\chrome.exe",
+        ]
+        for fixed in win_candidates:
+            if os.path.exists(fixed):
+                logger.debug("browser candidate %-28s  [OK — Windows fixed path]", fixed)
+                return fixed
+    else:
+        for fixed in (
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ):
+            if os.path.exists(fixed) and not _is_snap_path(fixed):
+                logger.debug("browser candidate %-28s  [OK — fixed path]", fixed)
+                return fixed
 
     return None
 
@@ -406,11 +425,15 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
                 bundled,
             )
             raise BrowserNotAvailableError(
-                "Chart export requires Chrome or Chromium but the available "
-                "browser failed to start.\n"
-                "Install a non-Snap Chrome/Chromium (e.g. "
-                "'sudo apt install chromium' from the apt repository, not snap) "
-                "or run 'plotly_get_chrome' and set BROWSER_PATH to the result."
+                "Chart export requires Chrome or Chromium but no usable browser "
+                "was found or the available browser failed to start.\n"
+                "Recovery options (choose one):\n"
+                "  • Set the BROWSER_PATH environment variable to point to an "
+                "existing Chrome/Chromium binary and restart the app.\n"
+                "  • Run  plotly_get_chrome  in the active venv to download a "
+                "bundled browser, then set BROWSER_PATH to the path it prints.\n"
+                "  Linux:          sudo apt install chromium  (apt package, not snap)\n"
+                "  macOS/Windows:  install Chrome from https://www.google.com/chrome/"
             ) from first_exc
 
         try:
@@ -433,8 +456,9 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
                 )
                 raise BrowserNotAvailableError(
                     "Chart export failed on both the initial attempt and the retry.\n"
-                    "Install a non-Snap Chrome/Chromium or set BROWSER_PATH to a "
-                    "working Chrome binary."
+                    "Set BROWSER_PATH to a working Chrome or Chromium binary and restart.\n"
+                    "  Linux:          sudo apt install chromium  (apt package, not snap)\n"
+                    "  macOS/Windows:  install Chrome from https://www.google.com/chrome/"
                 ) from retry_exc
             logger.error(
                 "export_plotly_figure: retry — unexpected error — %s: %s\n%s",

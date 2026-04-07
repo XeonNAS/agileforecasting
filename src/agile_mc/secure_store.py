@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -22,23 +24,56 @@ _APP_NAME = "agileforecasting"
 _OLD_APP_NAME = "agile-montecarlo"  # pre-rename; kept only for migration
 
 
+def _config_base(app_name: str) -> Path:
+    """Return the platform-appropriate config directory for *app_name*.
+
+    - Windows: ``%APPDATA%\\<app_name>``  (roaming profile)
+    - Linux / other: ``~/.config/<app_name>``
+    """
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / app_name
+    return Path(os.path.expanduser("~")) / ".config" / app_name
+
+
+def _migration_candidates(app_name: str) -> List[Path]:
+    """Old settings paths to check when the canonical file does not yet exist.
+
+    Candidates are evaluated in order; the first existing file is migrated.
+
+    Sources (all best-effort, leaves originals untouched):
+      Windows only — ``~\\.config\\<app>`` written by pre-fix versions of the app
+                     that used the Linux path convention on Windows.
+      All platforms — ``~/.config/<old_app_name>`` from the agile-montecarlo rename.
+    """
+    candidates: List[Path] = []
+    if sys.platform == "win32":
+        # Versions before the Windows-path fix stored settings under ~/.config on Windows.
+        candidates.append(Path(os.path.expanduser("~")) / ".config" / app_name / "ado_settings.enc.json")
+        # Old app name under %APPDATA% (unlikely, but covers the case where someone
+        # renamed the app while already on the Windows-native path).
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        candidates.append(Path(appdata) / _OLD_APP_NAME / "ado_settings.enc.json")
+    # All platforms: app-rename migration (agile-montecarlo → agileforecasting).
+    candidates.append(Path(os.path.expanduser("~")) / ".config" / _OLD_APP_NAME / "ado_settings.enc.json")
+    return candidates
+
+
 def default_paths(app_name: str = _APP_NAME) -> SecureStorePaths:
-    # Linux-friendly default (~/.config/agileforecasting/); works on all OSes.
-    base = Path(os.path.expanduser("~")) / ".config" / app_name
+    base = _config_base(app_name)
     paths = SecureStorePaths(config_dir=base, enc_file=base / "ado_settings.enc.json")
 
-    # One-time migration: copy settings from the old directory if the new one
-    # does not yet exist.  Leaves the old file in place (user can delete it).
+    # One-time migration: copy settings from an old location when the canonical
+    # file does not yet exist.  Leaves old files in place (user can delete them).
     if not paths.enc_file.exists():
-        old_enc = Path(os.path.expanduser("~")) / ".config" / _OLD_APP_NAME / "ado_settings.enc.json"
-        if old_enc.exists():
-            import shutil
-
-            paths.config_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.copy2(old_enc, paths.enc_file)
-            except Exception:
-                pass  # migration is best-effort; user can re-save manually
+        for old_enc in _migration_candidates(app_name):
+            if old_enc.exists():
+                paths.config_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(old_enc, paths.enc_file)
+                    break  # stop after the first successful migration
+                except Exception:
+                    pass  # migration is best-effort; user can re-save manually
 
     return paths
 
@@ -82,8 +117,10 @@ def save_encrypted(data: Dict[str, Any], passphrase: str, paths: Optional[Secure
     tmp = paths.enc_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    # Best-effort restrictive permissions
     try:
+        # Best-effort: restricts file access to the owner on Linux/macOS.
+        # os.chmod has no meaningful effect on Windows (ACL-based permissions);
+        # Fernet encryption is the primary protection on all platforms.
         os.chmod(tmp, 0o600)
     except Exception:
         pass

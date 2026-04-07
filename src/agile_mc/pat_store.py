@@ -97,6 +97,9 @@ def _file_save(pat: str, passphrase: str) -> None:
     tmp = enc_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     try:
+        # Best-effort: restricts file access to the owner on Linux/macOS.
+        # os.chmod has no meaningful effect on Windows (ACL-based permissions);
+        # Fernet encryption is the primary protection on all platforms.
         os.chmod(tmp, 0o600)
     except Exception:
         pass
