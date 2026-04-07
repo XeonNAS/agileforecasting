@@ -31,6 +31,7 @@ from agile_mc.calendar_export import build_when_calendar_figure
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _dummy_completion_dates(n: int = 200, seed: int = 42) -> list[dt.date]:
     """Generate *n* completion dates spread over ~18 months from a fixed start."""
     rng = random.Random(seed)
@@ -52,6 +53,7 @@ _CONTEXT_LINES = [
 # ---------------------------------------------------------------------------
 # Layout invariant tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("months", [3, 6, 9, 12])
 def test_context_annotation_stays_in_top_margin(months: int) -> None:
@@ -91,17 +93,12 @@ def test_context_annotation_stays_in_top_margin(months: int) -> None:
 
     # --- Top of annotation must be in the top margin (y > 1.0) ---
     top_y: float = float(ctx_ann.y)
-    assert top_y > 1.0, (
-        f"months={months}: context annotation top y={top_y:.4f} is not above "
-        f"the plot area (y=1.0)"
-    )
+    assert top_y > 1.0, f"months={months}: context annotation top y={top_y:.4f} is not above the plot area (y=1.0)"
 
     # Convert paper-coord top to pixels from figure top:
     #   pixel_from_top = T - (y - 1.0) * paper_h
     top_px_from_top = T - (top_y - 1.0) * paper_h
-    assert top_px_from_top >= 0, (
-        f"months={months}: annotation top ({top_px_from_top:.1f} px) clips outside the figure"
-    )
+    assert top_px_from_top >= 0, f"months={months}: annotation top ({top_px_from_top:.1f} px) clips outside the figure"
 
     # --- Estimated bottom of annotation must still be within the top margin ---
     # Estimate annotation height the same way calendar_export does, plus borderpad overhead.
@@ -141,16 +138,20 @@ def test_title_annotation_stays_in_top_margin(months: int) -> None:
 
     # Title annotation: xanchor="center", x=0.5
     title_ann = next(
-        (a for a in layout.annotations if getattr(a, "xanchor", None) == "center" and
-         getattr(a, "x", None) == 0.5 and float(getattr(a, "y", 0)) > 1.0),
+        (
+            a
+            for a in layout.annotations
+            if getattr(a, "xanchor", None) == "center"
+            and getattr(a, "x", None) == 0.5
+            and float(getattr(a, "y", 0)) > 1.0
+        ),
         None,
     )
     assert title_ann is not None, f"months={months}: title annotation not found"
 
     top_px_from_top = T - (float(title_ann.y) - 1.0) * paper_h
     assert 0 <= top_px_from_top <= T, (
-        f"months={months}: title annotation top ({top_px_from_top:.1f} px) "
-        f"is outside the top margin ({T} px)"
+        f"months={months}: title annotation top ({top_px_from_top:.1f} px) is outside the top margin ({T} px)"
     )
 
 
@@ -173,12 +174,10 @@ def test_screen_mode_has_no_header_annotation(months: int) -> None:
     # yanchor="bottom" and may also sit slightly above y=1.0 (in the inter-row
     # gap) — those are fine and expected.
     header_anns = [
-        a for a in fig.layout.annotations
-        if float(getattr(a, "y", 0)) > 1.0 and getattr(a, "yanchor", None) == "top"
+        a for a in fig.layout.annotations if float(getattr(a, "y", 0)) > 1.0 and getattr(a, "yanchor", None) == "top"
     ]
     assert not header_anns, (
-        f"months={months}: screen mode should have no export-header annotations "
-        f"(yanchor=top, y>1.0), got {header_anns}"
+        f"months={months}: screen mode should have no export-header annotations (yanchor=top, y>1.0), got {header_anns}"
     )
 
 
@@ -204,6 +203,5 @@ def test_figure_height_accommodates_tiles(months: int) -> None:
         B = int(layout.margin.b)
         paper_h = int(layout.height) - T - B
         assert paper_h >= 6 * _TILE_H_PX, (
-            f"months={months} context={'yes' if context else 'no'}: "
-            f"paper_h={paper_h} < min {6*_TILE_H_PX} px"
+            f"months={months} context={'yes' if context else 'no'}: paper_h={paper_h} < min {6 * _TILE_H_PX} px"
         )
