@@ -10,6 +10,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.2] — 2026-04-07
+
+### Added
+- Windows native support: Chrome discovery on Windows fixed paths
+  (`%LOCALAPPDATA%\Google\Chrome`, `C:\Program Files\Google\Chrome`);
+  config directory now uses `%APPDATA%\agileforecasting` on Windows
+  (automatic migration from old `~\.config\agileforecasting` path on first run).
+- `requirements.lock` now includes `sys_platform == "linux"` markers on
+  `jeepney` and `secretstorage` so the lockfile installs cleanly on Windows.
+- New CI job `test-windows` (windows-latest, Python 3.12) running ruff and
+  pytest on every push and pull request.
+- 16 new unit tests in `tests/test_windows_compat.py` covering Windows path
+  resolution, Chrome discovery, and cross-platform error messages — all tests
+  run on all platforms via `sys.platform` monkeypatching.
+- `docs/WINDOWS_SETUP.md` updated with Windows config paths, lock-file
+  warning, Chrome troubleshooting, and `%APPDATA%` path for settings removal.
+- `LICENSE` — MIT licence added.
+
+### Fixed
+- Calendar summary panel overlap corrected (When-calendar layout).
+- `test_linux_uses_dot_config` test assertions made robust against implementation detail changes.
+- Ruff import ordering and formatting fixes in test files.
+
+---
+
 ## [0.1.1] — 2026-04-06
 
 ### Fixed

@@ -349,3 +349,10 @@ agileforecasting/
 ├── pyproject.toml         # Package metadata, tool config
 └── requirements.txt       # Pinned runtime dependencies
 ```
+
+
+---
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 John Fraser
