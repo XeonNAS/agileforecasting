@@ -50,16 +50,21 @@ class TestSecureStoreWindowsPaths:
         assert paths.config_dir == fake_home / "AppData" / "Roaming" / "agileforecasting"
 
     def test_linux_uses_dot_config(self, monkeypatch, tmp_path):
-        """On Linux, default_paths() should use ~/.config/agileforecasting."""
+        """On Linux, default_paths() should use ~/.config/agileforecasting.
+
+        The assertion compares against the exact expected path rather than
+        checking substrings of the full absolute path.  Substring checks are
+        brittle on Windows-hosted CI where pytest's tmp_path is located under
+        AppData\\Local\\Temp, causing an "AppData not in path" assertion to
+        fail even when the Linux path logic is correct.
+        """
         monkeypatch.delenv("APPDATA", raising=False)
         with patch.object(sys, "platform", "linux"):
             with patch("os.path.expanduser", return_value=str(tmp_path)):
                 from agile_mc.secure_store import default_paths
 
                 paths = default_paths()
-        assert ".config" in str(paths.config_dir)
-        assert "agileforecasting" in str(paths.config_dir)
-        assert "AppData" not in str(paths.config_dir)
+        assert paths.config_dir == tmp_path / ".config" / "agileforecasting"
 
     def test_enc_file_is_inside_config_dir(self, monkeypatch, tmp_path):
         """enc_file should always sit directly inside config_dir."""
