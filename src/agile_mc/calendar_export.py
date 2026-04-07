@@ -151,12 +151,23 @@ def build_when_calendar_figure(
     # ── Top margin and export-header y positions ──────────────────────────
     # Header annotations are only added for export (context_lines provided).
     # Using yanchor="top": pixel_from_figure_top = T − (y − 1) × paper_h
-    _TITLE_H_PX = 44  # 20 pt text + 2×10 borderpad + 2 px border ≈ 44 px
+    #
+    # Annotation height formula (both title and context block):
+    #   height_px = line_count × line_height_px + 2×borderpad + 2×borderwidth
+    # borderpad=10 in each annotation below, borderwidth=1 → overhead = 2×10+2 = 22 px.
+    # Using line_height_px = 16 for font-size 12 (context) and 27 for font-size 20 (title).
+    #
+    # An extra safety buffer (_MARGIN_SAFETY_PX) is added so the annotation bottom
+    # stays inside the margin even if the renderer's actual metrics differ slightly.
+    _MARGIN_SAFETY_PX = 12  # px of extra headroom below the context block
+    _TITLE_H_PX = 52  # font-size 20 ≈ 27 px + 2×borderpad(10) + 2×borderwidth(1)
     if context_lines:
         _ctx_visible = [_esc(str(x)) for x in context_lines if str(x).strip()]
-        _CTX_H_PX = max(22, len(_ctx_visible) * 16 + 8)
-        # Stack: 10 px top pad → title → 8 px gap → context block → 10 px bottom pad.
-        T = max(60, 10 + _TITLE_H_PX + 8 + _CTX_H_PX + 10)
+        # Each context line ≈ 16 px at font-size 12, plus annotation border overhead.
+        _CTX_H_PX = max(22, len(_ctx_visible) * 16 + 2 * 10 + 2)
+        # Stack: 10 px top pad → title → 8 px gap → context block → 10 px bottom pad
+        #        + safety buffer so the annotation never clips into row 1.
+        T = max(60, 10 + _TITLE_H_PX + 8 + _CTX_H_PX + 10 + _MARGIN_SAFETY_PX)
         # y so annotation top lands 10 px below figure top edge.
         title_y = 1.0 + (T - 10) / paper_h
         ctx_y = 1.0 + (T - 10 - _TITLE_H_PX - 8) / paper_h

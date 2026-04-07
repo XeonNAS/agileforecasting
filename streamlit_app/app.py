@@ -758,7 +758,11 @@ else:
                 title="When forecast calendar",
                 context_lines=context_lines,
             )
-            ex = export_plotly_figure(cal_fig, fmt=cal_fmt, base_name="when_calendar")
+            # preserve_layout=True tells the exporter to keep the calendar's
+            # computed width/height/margins.  Overriding them (the default for
+            # general charts) changes paper_h and shifts paper-coord annotations
+            # into the first row of tiles — the overlap bug.
+            ex = export_plotly_figure(cal_fig, fmt=cal_fmt, base_name="when_calendar", preserve_layout=True)
             st.download_button(
                 "Download calendar",
                 data=ex.data,

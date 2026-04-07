@@ -327,7 +327,33 @@ def _prepared_export_figure(fig: go.Figure, fmt: str) -> tuple[go.Figure, int, i
 # ---------------------------------------------------------------------------
 
 
-def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExportResult:
+def export_plotly_figure(
+    fig: go.Figure,
+    fmt: str,
+    base_name: str,
+    *,
+    preserve_layout: bool = False,
+) -> ChartExportResult:
+    """Export a Plotly figure to PNG or SVG bytes.
+
+    Parameters
+    ----------
+    fig:
+        The Plotly figure to export.
+    fmt:
+        Output format — ``"png"`` or ``"svg"``.
+    base_name:
+        Stem used to construct the returned filename (e.g. ``"when_calendar"``).
+    preserve_layout:
+        When *True* the figure's own ``width``, ``height``, and ``margin``
+        are used as-is and ``_prepared_export_figure`` is **not** applied.
+
+        Set this for figures (such as the When-forecast calendar) whose layout
+        has been computed to exacting pixel measurements.  Overriding those
+        dimensions with the generic export defaults changes ``paper_h`` (the
+        plot-area height in pixels), which shifts paper-coordinate annotations
+        out of the top margin and into the first row of tiles.
+    """
     fmt = (fmt or "png").lower().strip()
     if fmt not in ("png", "svg"):
         fmt = "png"
@@ -341,7 +367,15 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
     except Exception:
         pass
 
-    export_fig, width, height, scale = _prepared_export_figure(fig, fmt)
+    if preserve_layout:
+        # Use the figure's own computed dimensions.  Scale=1 is intentional:
+        # the calendar layout is already sized for readability at 1x.
+        export_fig = go.Figure(fig)
+        width = int(getattr(export_fig.layout, "width", None) or (1600 if fmt == "png" else 1400))
+        height = int(getattr(export_fig.layout, "height", None) or (1000 if fmt == "png" else 900))
+        scale = 1
+    else:
+        export_fig, width, height, scale = _prepared_export_figure(fig, fmt)
 
     # ----------------------------------------------------------------
     # Proactively resolve the browser BEFORE the first render attempt.
@@ -353,7 +387,7 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
 
     logger.info(
         "export_plotly_figure: fmt=%s filename=%s title=%r fig_type=%s "
-        "width=%d height=%d scale=%d plotly=%s kaleido=%s "
+        "width=%d height=%d scale=%d preserve_layout=%s plotly=%s kaleido=%s "
         "browser=%s snap=%s",
         fmt,
         filename,
@@ -362,6 +396,7 @@ def export_plotly_figure(fig: go.Figure, fmt: str, base_name: str) -> ChartExpor
         width,
         height,
         scale,
+        preserve_layout,
         plotly.__version__,
         _kaleido_version(),
         browser or "none",
