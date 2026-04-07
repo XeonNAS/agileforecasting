@@ -8,6 +8,12 @@ Monte Carlo forecasting for Agile teams using Azure DevOps data.
 - Provides ActionableAgile-style **How Many** and **When** forecasts
 - Downloads charts as **PNG or SVG** (Plotly + Kaleido)
 
+## When forecast simulation
+![Screenshot](AgileForecastingWhen.png)
+
+## How Many forecast simulation
+![Screenshot](AgileForecastingHowMany.png)
+
 ---
 
 ## Windows setup
