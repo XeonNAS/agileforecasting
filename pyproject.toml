@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "streamlit>=1.40",
     "pandas>=2.1",
-    "numpy>=1.26",
+    "numpy>=2.4.4",
     "requests>=2.31",
     "plotly>=5.18",
     "kaleido>=0.2.1",
