@@ -15,7 +15,7 @@ dependencies = [
     "plotly>=5.18",
     "kaleido>=0.2.1",
     "cryptography>=42.0.0",
-    "python-dateutil>=2.9",
+    "python-dateutil>=2.9.0.post0",
     "keyring>=24.0",
 ]
 
