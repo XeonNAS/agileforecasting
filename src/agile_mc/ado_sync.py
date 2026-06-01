@@ -116,8 +116,11 @@ def fetch_sprints(ado: AdoClient) -> List[Sprint]:
         if not it_id or not sd or not fd:
             continue
         start = sd.date()
-        end_excl = fd.date()
-        end_incl = end_excl - dt.timedelta(days=1)
+        # ADO finishDate is the inclusive last day of the iteration (the UI
+        # shows that date as the sprint end).  end_exclusive is derived for
+        # range operations only.
+        end_incl = fd.date()
+        end_excl = end_incl + dt.timedelta(days=1)
         sprints.append(Sprint(str(it_id), str(name), start, end_excl, end_incl))
     sprints.sort(key=lambda s: (s.start_date, s.name))
     logger.info("fetch_sprints: %d sprints in %.0fms", len(sprints), (time.perf_counter() - _t) * 1000)
@@ -370,22 +373,44 @@ def build_capacity_schedule(
 
         inferred_zero_capacity_dates = sorted(set(inferred_zero_capacity_dates) - set(team_days_off_working))
 
+        # planned_working_days reflects the sprint *schedule*: only team-wide
+        # days off (explicit or inferred all-absent) reduce it.  Individual
+        # member days off must NOT reduce this value — they affect that
+        # person's available capacity only.
         explicit_or_inferred_days_off = set(team_days_off_working) | set(inferred_zero_capacity_dates)
-
-        summary_fallback_count = 0
-        if summary_team_days_off_count is not None:
-            summary_fallback_count = max(0, int(summary_team_days_off_count) - len(explicit_or_inferred_days_off))
-        planned_working_days = max(0, normal_working_days - len(explicit_or_inferred_days_off) - summary_fallback_count)
+        planned_working_days = max(0, normal_working_days - len(explicit_or_inferred_days_off))
 
         baseline_capacity_sum = baseline_per_day * float(normal_working_days)
 
-        if summary_fallback_count > 0 and baseline_per_day > 0:
-            planned_capacity_sum = max(0.0, planned_capacity_sum - (baseline_per_day * float(summary_fallback_count)))
-
+        # capacity_factor reflects actual team availability across all working
+        # days: accounts for both team-wide days off and individual days off.
+        # planned_capacity_sum was already computed correctly by the per-day
+        # per-member loop above.
         if baseline_capacity_sum <= 0:
             capacity_factor = (planned_working_days / normal_working_days) if normal_working_days else 1.0
         else:
             capacity_factor = planned_capacity_sum / baseline_capacity_sum
+
+        # schedule_availability reflects only the sprint schedule reduction
+        # (team days off / inferred zero-capacity days).
+        schedule_availability = (planned_working_days / normal_working_days) if normal_working_days else 1.0
+
+        per_user_capacity = [
+            {
+                "member_id": mid,
+                "capacity_per_day": cap,
+                "days_off_count": len(
+                    [d for d in member_off.get(mid, set()) if d in working_dates_set and d not in team_off]
+                ),
+                "available_days": normal_working_days
+                - len(team_days_off_working)
+                - len([d for d in member_off.get(mid, set()) if d in working_dates_set and d not in team_off]),
+                "available_capacity_hours": sum(
+                    cap for d in working_dates if d not in team_off and d not in member_off.get(mid, set())
+                ),
+            }
+            for mid, cap in baseline_by_member.items()
+        ]
 
         cap_rows.append(
             {
@@ -396,14 +421,16 @@ def build_capacity_schedule(
                 "end_date": sp.end_inclusive.isoformat(),
                 "normal_working_days": normal_working_days,
                 "planned_working_days": planned_working_days,
+                "schedule_availability": round(float(schedule_availability), 4),
                 "capacity_factor": round(float(capacity_factor), 4),
+                "team_capacity_hours": round(float(planned_capacity_sum), 4),
+                "baseline_capacity_hours": round(float(baseline_capacity_sum), 4),
                 "team_days_off_dates": ", ".join([d.isoformat() for d in team_days_off_working]),
-                "explicit_team_days_off_dates": ", ".join([d.isoformat() for d in team_days_off_working]),
                 "inferred_zero_capacity_dates": ", ".join([d.isoformat() for d in inferred_zero_capacity_dates]),
                 "iteration_summary_team_days_off_count": (
                     int(summary_team_days_off_count) if summary_team_days_off_count is not None else None
                 ),
-                "summary_fallback_days_off_count": int(summary_fallback_count),
+                "per_user_capacity": per_user_capacity,
             }
         )
 
