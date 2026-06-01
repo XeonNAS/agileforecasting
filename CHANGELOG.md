@@ -10,6 +10,58 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.3] — 2026-06-02
+
+### Fixed
+
+- **Sprint capacity calculation** (`ado_sync.py` — `fetch_sprints` and
+  `build_capacity_schedule`): two bugs that caused `planned_working_days`,
+  `capacity_factor`, and `end_date` to be wrong for every sprint when an ADO
+  team had individual member days off configured.
+
+  **Bug 1 — sprint end-date off by one day.**
+  Azure DevOps `finishDate` is the *inclusive* last day of the iteration (the
+  ADO UI shows it as the sprint end). The previous code subtracted one day
+  (`end_incl = finishDate − 1`), causing every sprint to lose its final
+  working day.  For a sprint the ADO UI shows as "May 14 – May 27", the app
+  was storing `end_date = 2026-05-26` and `normal_working_days = 9` instead
+  of the correct `2026-05-27` / `10`.
+
+  **Bug 2 — individual member days off incorrectly reduced
+  `planned_working_days`.**
+  The `iterationcapacities` API field `teamTotalDaysOff` is the *total* of all
+  off-days across all members (team-wide + individual).  The previous code
+  used it as a "summary fallback" count of additional *team-wide schedule* days
+  to subtract from `planned_working_days`.  For a sprint with 7 team members
+  each having one individual day off, this produced `planned_working_days = 2`
+  (9 − 7) and `capacity_factor = 0.125` instead of the correct
+  `planned_working_days = 9` and `capacity_factor ≈ 0.903`.
+
+  **Correct semantics now enforced:**
+  - `planned_working_days` is reduced only by team-wide days off (explicit
+    team days off or days where every member is absent).
+  - Individual member days off reduce that person's available capacity only.
+  - `capacity_factor = team_capacity_hours / baseline_capacity_hours` correctly
+    accounts for both team-wide and individual days off via the per-day
+    per-member loop already in place.
+  - The `summary_fallback_count` mechanism has been removed.
+
+### Added
+
+- Three new columns in the Sprint capacity schedule import table:
+  - `schedule_availability` — fraction of sprint working days not lost to
+    team-wide days off (`planned_working_days / normal_working_days`).
+  - `team_capacity_hours` — total person-hours available this sprint.
+  - `baseline_capacity_hours` — total person-hours if everyone worked every day.
+- `per_user_capacity` diagnostic field in each sprint row: a list of per-member
+  objects containing `member_id`, `capacity_per_day`, `days_off_count`,
+  `available_days`, and `available_capacity_hours`.
+- `tests/test_ado_capacity_calculation.py` — 20 new focused tests covering the
+  corrected date boundary, schedule vs. capacity factor separation,
+  double-counting protection, and per-user diagnostic fields.
+
+---
+
 ## [0.1.2] — 2026-04-07
 
 ### Added
