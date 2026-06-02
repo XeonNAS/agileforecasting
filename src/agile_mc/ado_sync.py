@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import re
 import time
@@ -20,6 +21,18 @@ logger = logging.getLogger(__name__)
 # speedup on typical team sizes of 10–30 sprints.
 _ADO_MAX_WORKERS = 4
 
+# ---------------------------------------------------------------------------
+# Capacity source constants
+# ---------------------------------------------------------------------------
+
+#: Azure returned capacity rows with at least one member having non-zero capacity.
+CAPACITY_SOURCE_CONFIGURED = "azure_configured"
+#: Azure returned no capacity rows for this sprint (common for future sprints).
+CAPACITY_SOURCE_MISSING = "missing_capacity"
+#: Azure returned capacity rows but every member has 0 capacityPerDay.
+CAPACITY_SOURCE_ZERO = "zero_capacity"
+#: No Azure data available; capacity was inherited from the last configured sprint.
+CAPACITY_SOURCE_CARRIED = "carried_forward"
 
 # ---------------------------------------------------------------------------
 # Pure utility functions
@@ -97,6 +110,7 @@ class _SprintMetadata:
     member_days_off: Dict[str, Set[dt.date]] = field(default_factory=dict)
     baseline_per_day: float = 0.0
     summary_days_off_count: Optional[int] = None
+    capacity_source: str = CAPACITY_SOURCE_MISSING
 
 
 def fetch_sprints(ado: AdoClient) -> List[Sprint]:
@@ -155,11 +169,26 @@ def _parse_days_off_ranges(value: Any) -> Set[dt.date]:
     return out
 
 
-def fetch_capacities_for_sprint(ado: AdoClient, sprint: Sprint) -> Tuple[Dict[str, float], Dict[str, Set[dt.date]]]:
+def fetch_capacities_for_sprint(
+    ado: AdoClient, sprint: Sprint
+) -> Tuple[Dict[str, float], Dict[str, Set[dt.date]], str]:
+    """Fetch per-member capacity for a sprint.
+
+    Returns (baseline_by_member, member_days_off, capacity_source).
+
+    capacity_source is one of:
+    - CAPACITY_SOURCE_CONFIGURED  real rows with at least one non-zero capacityPerDay
+    - CAPACITY_SOURCE_MISSING     Azure returned no rows (e.g. unconfigured future sprint)
+    - CAPACITY_SOURCE_ZERO        rows returned but every member has 0 capacityPerDay
+    """
     baseline: Dict[str, float] = {}
     member_days_off: Dict[str, Set[dt.date]] = {}
 
     rows = ado.get_capacities(sprint.iteration_id) or []
+    if not rows:
+        logger.debug("fetch_capacities_for_sprint: no capacity rows returned for sprint %s", sprint.name)
+        return baseline, member_days_off, CAPACITY_SOURCE_MISSING
+
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -178,14 +207,26 @@ def fetch_capacities_for_sprint(ado: AdoClient, sprint: Sprint) -> Tuple[Dict[st
                     cap += float(a.get("capacityPerDay") or 0.0)
                 except Exception:
                     pass
-        # If capacity isn't configured, fallback to 1.0 per member so days-off still matter
-        if cap <= 0.0:
-            cap = 1.0
         baseline[str(member_id)] = cap
-
         member_days_off[str(member_id)] = _parse_days_off_ranges(row.get("daysOff") or [])
 
-    return baseline, member_days_off
+    logger.debug(
+        "fetch_capacities_for_sprint: %d members for sprint %s; capacities=%s",
+        len(baseline),
+        sprint.name,
+        {mid: cap for mid, cap in baseline.items()},
+    )
+
+    # Distinguish ZERO (rows exist, all 0) from CONFIGURED (at least one non-zero)
+    if baseline and all(v == 0.0 for v in baseline.values()):
+        logger.debug(
+            "fetch_capacities_for_sprint: all %d members have 0 capacityPerDay for sprint %s",
+            len(baseline),
+            sprint.name,
+        )
+        return baseline, member_days_off, CAPACITY_SOURCE_ZERO
+
+    return baseline, member_days_off, CAPACITY_SOURCE_CONFIGURED
 
 
 def _select_iteration_team_summary(
@@ -260,18 +301,15 @@ def _fetch_sprint_metadata(ado: AdoClient, sprint: Sprint) -> _SprintMetadata:
 
     Designed to run in a thread pool — the AdoClient's requests.Session is
     thread-safe for concurrent reads once the headers are initialised.
-    Call order: team_days_off → capacities → (derive baseline_per_day) →
-    iteration_summary.  Steps 1 and 2 are independent but kept serial here
-    because the cross-sprint parallelism in build_capacity_schedule already
-    provides the dominant speedup.
     """
     team_days_off = fetch_team_days_off_for_sprint(ado, sprint)
-    baseline_by_member, member_days_off = fetch_capacities_for_sprint(ado, sprint)
+    baseline_by_member, member_days_off, capacity_source = fetch_capacities_for_sprint(ado, sprint)
 
     baseline_per_day = sum(baseline_by_member.values()) if baseline_by_member else 0.0
-    if baseline_per_day <= 0.0:
-        baseline_per_day = max(1.0, float(len(baseline_by_member) or 1))
 
+    # Always fetch the iteration summary for diagnostic purposes; the result is
+    # stored as-is in ado_team_total_days_off_count (a raw Azure field that may
+    # include individual member days off, not only team-wide days off).
     summary_days_off_count = fetch_iteration_summary_days_off_count(ado, sprint, baseline_per_day)
 
     return _SprintMetadata(
@@ -280,7 +318,212 @@ def _fetch_sprint_metadata(ado: AdoClient, sprint: Sprint) -> _SprintMetadata:
         member_days_off=member_days_off,
         baseline_per_day=baseline_per_day,
         summary_days_off_count=summary_days_off_count,
+        capacity_source=capacity_source,
     )
+
+
+# ---------------------------------------------------------------------------
+# Pure sprint capacity calculation
+# ---------------------------------------------------------------------------
+
+
+def calculate_sprint_capacity(
+    sprint: Sprint,
+    working_weekdays: Set[int],
+    team_days_off: Set[dt.date],
+    baseline_by_member: Dict[str, float],
+    member_days_off: Dict[str, Set[dt.date]],
+    capacity_source: str,
+    summary_days_off_count: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Compute all sprint capacity fields from parsed ADO inputs.
+
+    Pure function — no I/O.  Accepts the data returned by the three ADO
+    capacity endpoints and returns every field needed for the cap_df row plus
+    a ``per_date_ratios`` dict (keyed by date) for merging into the global
+    capacity map used by the simulation.
+
+    Definitions
+    -----------
+    normal_working_days
+        Weekdays in the sprint range (before any days off).
+    team_days_off_count
+        Working days off for the whole team, from the team days-off endpoint only.
+        Individual member days off do NOT reduce this value.
+    planned_working_days
+        normal_working_days - team_days_off_count (team-wide only).
+    schedule_availability
+        planned_working_days / normal_working_days.
+    per_user available_days
+        planned_working_days - user's individual days off (excluding team days off).
+    team_capacity_hours
+        Sum of (capacity_per_day × available_days) for every member.
+    baseline_capacity_hours
+        Sum of (capacity_per_day × normal_working_days) for every member.
+    capacity_factor
+        team_capacity_hours / baseline_capacity_hours.
+    per_date_ratios
+        team available capacity / baseline_per_day for each working day.
+        0.0 on team days off.  1.0 when capacity source is MISSING (no data).
+    """
+    working_dates = [d for d in iter_dates(sprint.start_date, sprint.end_inclusive) if d.weekday() in working_weekdays]
+    working_dates_set = set(working_dates)
+    normal_working_days = len(working_dates)
+
+    team_days_off_working = sorted([d for d in team_days_off if d in working_dates_set])
+    team_days_off_count = len(team_days_off_working)
+
+    per_date_ratios: Dict[dt.date, float] = {}
+    warnings: List[str] = []
+
+    # ------------------------------------------------------------------
+    # MISSING: Azure returned no capacity rows; carry-forward not applied.
+    # Treat all non-team-off working days as full capacity for simulation.
+    # Report numeric capacity fields as None — we have no data.
+    # ------------------------------------------------------------------
+    if capacity_source == CAPACITY_SOURCE_MISSING:
+        for d in working_dates:
+            per_date_ratios[d] = 0.0 if d in team_days_off else 1.0
+        planned_working_days = max(0, normal_working_days - team_days_off_count)
+        schedule_availability = (planned_working_days / normal_working_days) if normal_working_days else 1.0
+        warnings.append(
+            f"No capacity configured in Azure DevOps for sprint '{sprint.name}'. "
+            "Simulation uses full capacity (1.0) for this sprint's working days."
+        )
+        return {
+            "normal_working_days": normal_working_days,
+            "planned_working_days": planned_working_days,
+            "schedule_availability": round(schedule_availability, 4),
+            "capacity_factor": None,
+            "team_capacity_hours": None,
+            "baseline_capacity_hours": None,
+            "team_days_off_dates": ", ".join(d.isoformat() for d in team_days_off_working),
+            "team_days_off_count": team_days_off_count,
+            "inferred_zero_capacity_dates": "",
+            "ado_team_total_days_off_count": summary_days_off_count,
+            "capacity_source": capacity_source,
+            "per_user_capacity": json.dumps([]),
+            "per_date_ratios": per_date_ratios,
+            "warnings": warnings,
+        }
+
+    # ------------------------------------------------------------------
+    # ZERO: Azure returned rows but every member has 0 capacityPerDay.
+    # Treat all working days as zero capacity; report explicit zeros.
+    # ------------------------------------------------------------------
+    if capacity_source == CAPACITY_SOURCE_ZERO:
+        for d in working_dates:
+            per_date_ratios[d] = 0.0
+        planned_working_days = max(0, normal_working_days - team_days_off_count)
+        schedule_availability = (planned_working_days / normal_working_days) if normal_working_days else 1.0
+        per_user_capacity = [
+            {
+                "member_id": mid,
+                "capacity_per_day": 0.0,
+                "days_off_count": len(
+                    [d for d in member_days_off.get(mid, set()) if d in working_dates_set and d not in team_days_off]
+                ),
+                "available_days": planned_working_days,
+                "available_capacity_hours": 0.0,
+            }
+            for mid in baseline_by_member
+        ]
+        warnings.append(
+            f"Azure DevOps returned capacity rows for sprint '{sprint.name}' but all members have 0 capacity."
+        )
+        return {
+            "normal_working_days": normal_working_days,
+            "planned_working_days": planned_working_days,
+            "schedule_availability": round(schedule_availability, 4),
+            "capacity_factor": 0.0,
+            "team_capacity_hours": 0.0,
+            "baseline_capacity_hours": 0.0,
+            "team_days_off_dates": ", ".join(d.isoformat() for d in team_days_off_working),
+            "team_days_off_count": team_days_off_count,
+            "inferred_zero_capacity_dates": "",
+            "ado_team_total_days_off_count": summary_days_off_count,
+            "capacity_source": capacity_source,
+            "per_user_capacity": json.dumps(per_user_capacity),
+            "per_date_ratios": per_date_ratios,
+            "warnings": warnings,
+        }
+
+    # ------------------------------------------------------------------
+    # CONFIGURED or CARRIED: full per-day per-member calculation.
+    # ------------------------------------------------------------------
+    baseline_per_day = sum(baseline_by_member.values())
+
+    inferred_zero_capacity_dates: List[dt.date] = []
+    planned_capacity_sum = 0.0
+
+    for d in working_dates:
+        if d in team_days_off:
+            per_date_ratios[d] = 0.0
+            continue
+        available = 0.0
+        for mid, cap in baseline_by_member.items():
+            if d not in member_days_off.get(mid, set()):
+                available += cap
+        ratio = available / baseline_per_day if baseline_per_day > 0 else 1.0
+        per_date_ratios[d] = ratio
+        # A non-team-off working day with 0 available capacity means every member
+        # has an individual day off on that date — treat it as an inferred team day off
+        # for the purpose of planned_working_days.
+        if available <= 0.0:
+            inferred_zero_capacity_dates.append(d)
+        planned_capacity_sum += available
+
+    inferred_zero_capacity_dates = sorted(set(inferred_zero_capacity_dates) - set(team_days_off_working))
+
+    # planned_working_days reflects the sprint *schedule*: only team-wide days off
+    # (explicit or inferred all-absent) reduce it.  Individual member days off must
+    # NOT reduce this value — they affect that person's available capacity only.
+    explicit_or_inferred_days_off = set(team_days_off_working) | set(inferred_zero_capacity_dates)
+    planned_working_days = max(0, normal_working_days - len(explicit_or_inferred_days_off))
+
+    baseline_capacity_sum = baseline_per_day * float(normal_working_days)
+    schedule_availability = (planned_working_days / normal_working_days) if normal_working_days else 1.0
+
+    if baseline_capacity_sum > 0:
+        capacity_factor = planned_capacity_sum / baseline_capacity_sum
+    else:
+        capacity_factor = schedule_availability
+
+    per_user_capacity = []
+    for mid, cap in baseline_by_member.items():
+        user_days_off_excl_team = [
+            d for d in member_days_off.get(mid, set()) if d in working_dates_set and d not in team_days_off
+        ]
+        available_days = normal_working_days - team_days_off_count - len(user_days_off_excl_team)
+        available_cap_hours = sum(
+            cap for d in working_dates if d not in team_days_off and d not in member_days_off.get(mid, set())
+        )
+        per_user_capacity.append(
+            {
+                "member_id": mid,
+                "capacity_per_day": cap,
+                "days_off_count": len(user_days_off_excl_team),
+                "available_days": available_days,
+                "available_capacity_hours": available_cap_hours,
+            }
+        )
+
+    return {
+        "normal_working_days": normal_working_days,
+        "planned_working_days": planned_working_days,
+        "schedule_availability": round(schedule_availability, 4),
+        "capacity_factor": round(capacity_factor, 4),
+        "team_capacity_hours": round(planned_capacity_sum, 4),
+        "baseline_capacity_hours": round(baseline_capacity_sum, 4),
+        "team_days_off_dates": ", ".join(d.isoformat() for d in team_days_off_working),
+        "team_days_off_count": team_days_off_count,
+        "inferred_zero_capacity_dates": ", ".join(d.isoformat() for d in inferred_zero_capacity_dates),
+        "ado_team_total_days_off_count": summary_days_off_count,
+        "capacity_source": capacity_source,
+        "per_user_capacity": json.dumps(per_user_capacity),
+        "per_date_ratios": per_date_ratios,
+        "warnings": warnings,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -304,8 +547,6 @@ def build_capacity_schedule(
     # Phase 1: Fetch all sprint metadata in parallel.
     # Each sprint requires 3 independent-ish API calls; doing them in a
     # thread pool reduces N×3 serial round-trips to ceil(N/workers)×3.
-    # Example: 20 sprints, 4 workers → 5 "rounds" instead of 20 rounds,
-    # saving ~75% of metadata fetch time.
     # ------------------------------------------------------------------
     _t_meta = time.perf_counter()
     n_workers = min(len(sprints), _ADO_MAX_WORKERS)
@@ -327,6 +568,41 @@ def build_capacity_schedule(
     )
 
     # ------------------------------------------------------------------
+    # Phase 1.5: Apply carry-forward for MISSING capacity sprints.
+    #
+    # Future sprints often have no capacity configured in Azure DevOps yet.
+    # Rather than reporting zero capacity (which breaks forecasting), we carry
+    # the last CONFIGURED sprint's per-member baseline forward.  The target
+    # sprint's own team_days_off and member_days_off (which Azure does return)
+    # are still applied on top of the carried baseline.
+    #
+    # ZERO capacity is NOT carried forward — if Azure explicitly says a member
+    # has 0 hours, that is a deliberate configuration.
+    # ------------------------------------------------------------------
+    last_valid_baseline: Dict[str, float] = {}
+    for sp in sprints:
+        meta = sprint_meta[sp.iteration_id]
+        if meta.capacity_source == CAPACITY_SOURCE_CONFIGURED:
+            last_valid_baseline = dict(meta.baseline_by_member)
+        elif meta.capacity_source == CAPACITY_SOURCE_MISSING and last_valid_baseline:
+            carried_per_day = sum(last_valid_baseline.values())
+            sprint_meta[sp.iteration_id] = _SprintMetadata(
+                team_days_off=meta.team_days_off,
+                baseline_by_member=dict(last_valid_baseline),
+                member_days_off=meta.member_days_off,
+                baseline_per_day=carried_per_day,
+                summary_days_off_count=meta.summary_days_off_count,
+                capacity_source=CAPACITY_SOURCE_CARRIED,
+            )
+            logger.debug(
+                "build_capacity_schedule: sprint %s has no capacity; carried forward from last "
+                "configured sprint (%d members, %.1f h/day)",
+                sp.name,
+                len(last_valid_baseline),
+                carried_per_day,
+            )
+
+    # ------------------------------------------------------------------
     # Phase 2: Compute capacity schedule (pure computation, no API calls).
     # ------------------------------------------------------------------
     _t_compute = time.perf_counter()
@@ -342,75 +618,18 @@ def build_capacity_schedule(
         )
 
         meta = sprint_meta[sp.iteration_id]
-        team_off = meta.team_days_off
-        baseline_by_member = meta.baseline_by_member
-        member_off = meta.member_days_off
-        baseline_per_day = meta.baseline_per_day
-        summary_team_days_off_count = meta.summary_days_off_count
+        result = calculate_sprint_capacity(
+            sprint=sp,
+            working_weekdays=working_weekdays,
+            team_days_off=meta.team_days_off,
+            baseline_by_member=meta.baseline_by_member,
+            member_days_off=meta.member_days_off,
+            capacity_source=meta.capacity_source,
+            summary_days_off_count=meta.summary_days_off_count,
+        )
 
-        working_dates = [d for d in iter_dates(sp.start_date, sp.end_inclusive) if d.weekday() in working_weekdays]
-        working_dates_set = set(working_dates)
-        normal_working_days = len(working_dates)
-
-        team_days_off_working = sorted([d for d in team_off if d in working_dates_set])
-
-        inferred_zero_capacity_dates: List[dt.date] = []
-        planned_capacity_sum = 0.0
-        for d in working_dates:
-            if d in team_off:
-                per_date_ratio[d] = 0.0
-                continue
-            available = 0.0
-            for mid, cap in baseline_by_member.items():
-                if d in member_off.get(mid, set()):
-                    continue
-                available += cap
-            ratio = available / baseline_per_day if baseline_per_day > 0 else 1.0
-            per_date_ratio[d] = ratio
-            if baseline_by_member and available <= 0.0:
-                inferred_zero_capacity_dates.append(d)
-            planned_capacity_sum += available
-
-        inferred_zero_capacity_dates = sorted(set(inferred_zero_capacity_dates) - set(team_days_off_working))
-
-        # planned_working_days reflects the sprint *schedule*: only team-wide
-        # days off (explicit or inferred all-absent) reduce it.  Individual
-        # member days off must NOT reduce this value — they affect that
-        # person's available capacity only.
-        explicit_or_inferred_days_off = set(team_days_off_working) | set(inferred_zero_capacity_dates)
-        planned_working_days = max(0, normal_working_days - len(explicit_or_inferred_days_off))
-
-        baseline_capacity_sum = baseline_per_day * float(normal_working_days)
-
-        # capacity_factor reflects actual team availability across all working
-        # days: accounts for both team-wide days off and individual days off.
-        # planned_capacity_sum was already computed correctly by the per-day
-        # per-member loop above.
-        if baseline_capacity_sum <= 0:
-            capacity_factor = (planned_working_days / normal_working_days) if normal_working_days else 1.0
-        else:
-            capacity_factor = planned_capacity_sum / baseline_capacity_sum
-
-        # schedule_availability reflects only the sprint schedule reduction
-        # (team days off / inferred zero-capacity days).
-        schedule_availability = (planned_working_days / normal_working_days) if normal_working_days else 1.0
-
-        per_user_capacity = [
-            {
-                "member_id": mid,
-                "capacity_per_day": cap,
-                "days_off_count": len(
-                    [d for d in member_off.get(mid, set()) if d in working_dates_set and d not in team_off]
-                ),
-                "available_days": normal_working_days
-                - len(team_days_off_working)
-                - len([d for d in member_off.get(mid, set()) if d in working_dates_set and d not in team_off]),
-                "available_capacity_hours": sum(
-                    cap for d in working_dates if d not in team_off and d not in member_off.get(mid, set())
-                ),
-            }
-            for mid, cap in baseline_by_member.items()
-        ]
+        # Merge this sprint's per-date ratios into the global map.
+        per_date_ratio.update(result.pop("per_date_ratios"))
 
         cap_rows.append(
             {
@@ -419,18 +638,7 @@ def build_capacity_schedule(
                 "sprint_num": extract_sprint_number(sp.name),
                 "start_date": sp.start_date.isoformat(),
                 "end_date": sp.end_inclusive.isoformat(),
-                "normal_working_days": normal_working_days,
-                "planned_working_days": planned_working_days,
-                "schedule_availability": round(float(schedule_availability), 4),
-                "capacity_factor": round(float(capacity_factor), 4),
-                "team_capacity_hours": round(float(planned_capacity_sum), 4),
-                "baseline_capacity_hours": round(float(baseline_capacity_sum), 4),
-                "team_days_off_dates": ", ".join([d.isoformat() for d in team_days_off_working]),
-                "inferred_zero_capacity_dates": ", ".join([d.isoformat() for d in inferred_zero_capacity_dates]),
-                "iteration_summary_team_days_off_count": (
-                    int(summary_team_days_off_count) if summary_team_days_off_count is not None else None
-                ),
-                "per_user_capacity": per_user_capacity,
+                **result,
             }
         )
 

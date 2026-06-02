@@ -6,17 +6,26 @@ Covers:
 - Individual member days off reduce capacity_factor but NOT planned_working_days
 - Double-counting protection when an individual day off falls on a team day off
 - capacity_factor and team_capacity_hours are correctly computed
+- Missing/future sprint capacity handling (MISSING, ZERO, CARRIED_FORWARD states)
+- Carry-forward from last configured sprint
+- ado_team_total_days_off_count is a raw Azure diagnostic field only
+- per_user_capacity is serialised as a JSON string
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
 import pytest
 
 from agile_mc.ado_sync import (
+    CAPACITY_SOURCE_CARRIED,
+    CAPACITY_SOURCE_CONFIGURED,
+    CAPACITY_SOURCE_MISSING,
+    CAPACITY_SOURCE_ZERO,
     Sprint,
     build_capacity_schedule,
     fetch_sprints,
@@ -71,6 +80,11 @@ def _stub_ado_list_iterations(iterations: List[Dict]) -> MagicMock:
     return ado
 
 
+def _per_user(cap_df_row) -> List[Dict]:
+    """Parse the JSON per_user_capacity column from a cap_df row."""
+    return json.loads(cap_df_row["per_user_capacity"])
+
+
 # ---------------------------------------------------------------------------
 # Bug 1: ADO finishDate is inclusive — date boundary test
 # ---------------------------------------------------------------------------
@@ -116,14 +130,16 @@ class TestFetchSprintsDateBoundary:
         # May 14(Thu) 15(Fri) 18(Mon) 19(Tue) 20(Wed) 21(Thu) 22(Fri)
         #     25(Mon) 26(Tue) 27(Wed) = 10 working days
         sprint = _make_sprint(11, dt.date(2026, 5, 14), dt.date(2026, 5, 27))
-        ado = _stub_ado()
+        capacities = [_capacity_row("u1", 6.5, [])]
+        ado = _stub_ado(capacities=capacities)
         _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
         assert int(cap_df.iloc[0]["normal_working_days"]) == 10
 
     def test_finish_date_weekday_appears_in_per_date_ratio(self):
         """The finishDate (May 27, a Wednesday) must appear in per_date_ratio."""
         sprint = _make_sprint(11, dt.date(2026, 5, 14), dt.date(2026, 5, 27))
-        ado = _stub_ado()
+        capacities = [_capacity_row("u1", 6.5, [])]
+        ado = _stub_ado(capacities=capacities)
         _, _, per_date_ratio = build_capacity_schedule(ado, [sprint], _WORKING)
         assert dt.date(2026, 5, 27) in per_date_ratio
 
@@ -353,7 +369,8 @@ class TestScheduleAvailabilitySeparation:
     def test_schedule_availability_below_one_with_team_days_off(self):
         sprint = _make_sprint(11, dt.date(2026, 5, 14), dt.date(2026, 5, 27))
         team_off = [_team_day_off("2026-05-21"), _team_day_off("2026-05-26")]
-        ado = _stub_ado(team_days_off=team_off)
+        capacities = [_capacity_row("u1", 6.5, [])]
+        ado = _stub_ado(team_days_off=team_off, capacities=capacities)
         _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
         row = cap_df.iloc[0]
         # 10 working days, 2 team off → 8/10 = 0.8
@@ -361,7 +378,7 @@ class TestScheduleAvailabilitySeparation:
 
 
 # ---------------------------------------------------------------------------
-# per_user_capacity diagnostic field
+# per_user_capacity diagnostic field (serialised as JSON string)
 # ---------------------------------------------------------------------------
 
 
@@ -371,11 +388,22 @@ class TestPerUserCapacityDiagnostic:
         capacities = [_capacity_row("u1", 6.5, []), _capacity_row("u2", 4.0, [])]
         ado = _stub_ado(capacities=capacities)
         _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
-        per_user = cap_df.iloc[0]["per_user_capacity"]
+        per_user = _per_user(cap_df.iloc[0])
         assert isinstance(per_user, list)
         assert len(per_user) == 2
         member_ids = {row["member_id"] for row in per_user}
         assert member_ids == {"u1", "u2"}
+
+    def test_per_user_capacity_is_json_string(self):
+        """The per_user_capacity column must be a JSON string, not a Python list."""
+        sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
+        capacities = [_capacity_row("u1", 6.5, [])]
+        ado = _stub_ado(capacities=capacities)
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        raw = cap_df.iloc[0]["per_user_capacity"]
+        assert isinstance(raw, str), "per_user_capacity must be a JSON string for CSV export compatibility"
+        parsed = json.loads(raw)
+        assert isinstance(parsed, list)
 
     def test_per_user_days_off_count_correct(self):
         sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
@@ -386,7 +414,7 @@ class TestPerUserCapacityDiagnostic:
         ]
         ado = _stub_ado(capacities=capacities)
         _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
-        per_user = {row["member_id"]: row for row in cap_df.iloc[0]["per_user_capacity"]}
+        per_user = {row["member_id"]: row for row in _per_user(cap_df.iloc[0])}
         assert per_user["u1"]["days_off_count"] == 2
         assert per_user["u2"]["days_off_count"] == 0
 
@@ -403,7 +431,7 @@ class TestPerUserCapacityDiagnostic:
         # 10 working days, 1 team off → 9 non-team working days
         # u1: 1 personal off → available = 9 - 1 = 8
         # u2: 0 personal off → available = 9
-        per_user = {row["member_id"]: row for row in cap_df.iloc[0]["per_user_capacity"]}
+        per_user = {row["member_id"]: row for row in _per_user(cap_df.iloc[0])}
         assert per_user["u1"]["available_days"] == 8
         assert per_user["u2"]["available_days"] == 9
 
@@ -415,18 +443,18 @@ class TestPerUserCapacityDiagnostic:
         ]
         ado = _stub_ado(capacities=capacities)
         _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
-        per_user = {row["member_id"]: row for row in cap_df.iloc[0]["per_user_capacity"]}
+        per_user = {row["member_id"]: row for row in _per_user(cap_df.iloc[0])}
         assert per_user["u1"]["available_capacity_hours"] == pytest.approx(9 * 6.5)
         assert per_user["u2"]["available_capacity_hours"] == pytest.approx(10 * 4.0)
 
 
 # ---------------------------------------------------------------------------
-# summary_team_days_off_count does not pollute planned_working_days
+# ado_team_total_days_off_count does not pollute planned_working_days
 # ---------------------------------------------------------------------------
 
 
-class TestIterationSummaryDaysOffCountIsolated:
-    def test_summary_api_days_off_count_does_not_reduce_planned(self):
+class TestADOTeamTotalDaysOffCountIsolated:
+    def test_ado_summary_api_days_off_count_does_not_reduce_planned(self):
         """iterationcapacities returning teamTotalDaysOff=7 (7 individual off days)
         must NOT reduce planned_working_days.
         """
@@ -449,10 +477,315 @@ class TestIterationSummaryDaysOffCountIsolated:
         # Must be 9 (no team days off), not 9-7=2
         assert int(row["planned_working_days"]) == 9
 
-    def test_summary_count_stored_for_diagnostics(self):
-        """iteration_summary_team_days_off_count is preserved for auditing."""
+    def test_ado_summary_count_stored_for_diagnostics(self):
+        """ado_team_total_days_off_count is preserved for auditing (raw Azure field)."""
         sprint = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 9))
-        iteration_caps = {"teams": [{"teamCapacityPerDay": 52.0, "teamTotalDaysOff": 7}]}
-        ado = _stub_ado(iteration_capacities=iteration_caps)
+        capacities = [_capacity_row("u1", 6.5, [])]
+        iteration_caps = {"teams": [{"teamCapacityPerDay": 6.5, "teamTotalDaysOff": 7}]}
+        ado = _stub_ado(capacities=capacities, iteration_capacities=iteration_caps)
         _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
-        assert int(cap_df.iloc[0]["iteration_summary_team_days_off_count"]) == 7
+        assert int(cap_df.iloc[0]["ado_team_total_days_off_count"]) == 7
+
+    def test_team_days_off_count_is_from_team_endpoint_only(self):
+        """team_days_off_count counts only team-wide days off (from team endpoint)."""
+        sprint = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 9))
+        team_off = [_team_day_off("2026-05-28")]  # one team day off
+        capacities = [
+            _capacity_row("u1", 6.5, ["2026-06-01"]),  # individual day off
+            _capacity_row("u2", 6.5, ["2026-06-02"]),  # individual day off
+        ]
+        ado = _stub_ado(team_days_off=team_off, capacities=capacities)
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        row = cap_df.iloc[0]
+        # Only 1 team day off; individual days off must not count here
+        assert int(row["team_days_off_count"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Missing capacity: future sprints with no Azure capacity data
+# ---------------------------------------------------------------------------
+
+
+class TestMissingCapacity:
+    def test_missing_capacity_source_when_no_rows(self):
+        """Sprint with no capacity rows must report capacity_source=missing_capacity."""
+        sprint = _make_sprint(14, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+        ado = _stub_ado(capacities=[])  # no capacity rows
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        assert cap_df.iloc[0]["capacity_source"] == CAPACITY_SOURCE_MISSING
+
+    def test_missing_capacity_fields_are_none(self):
+        """When capacity is missing, numeric capacity fields must be None (not zero)."""
+        sprint = _make_sprint(14, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+        ado = _stub_ado(capacities=[])
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        row = cap_df.iloc[0]
+        assert row["team_capacity_hours"] is None, "team_capacity_hours must be None for missing capacity"
+        assert row["baseline_capacity_hours"] is None, "baseline_capacity_hours must be None for missing capacity"
+        assert row["capacity_factor"] is None, "capacity_factor must be None for missing capacity"
+
+    def test_missing_capacity_per_date_ratio_is_one(self):
+        """Missing capacity sprints must contribute 1.0 to per_date_ratio, not 0.0."""
+        sprint = _make_sprint(14, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+        ado = _stub_ado(capacities=[])
+        _, _, per_date_ratio = build_capacity_schedule(ado, [sprint], _WORKING)
+        # Jun 11 is a Thursday → working day
+        assert dt.date(2026, 6, 11) in per_date_ratio
+        assert per_date_ratio[dt.date(2026, 6, 11)] == pytest.approx(1.0), (
+            "Future sprint with no capacity must not mark working days as 0.0"
+        )
+
+    def test_missing_capacity_team_day_off_still_zero(self):
+        """Team days off are still 0.0 in per_date_ratio even when capacity is missing."""
+        sprint = _make_sprint(14, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+        team_off = [_team_day_off("2026-06-11")]
+        ado = _stub_ado(team_days_off=team_off, capacities=[])
+        _, _, per_date_ratio = build_capacity_schedule(ado, [sprint], _WORKING)
+        assert per_date_ratio[dt.date(2026, 6, 11)] == 0.0
+
+    def test_missing_capacity_planned_working_days_still_populated(self):
+        """planned_working_days and schedule_availability are computed even when capacity is missing."""
+        sprint = _make_sprint(14, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+        ado = _stub_ado(capacities=[])
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        row = cap_df.iloc[0]
+        assert int(row["normal_working_days"]) > 0
+        assert int(row["planned_working_days"]) > 0
+        assert float(row["schedule_availability"]) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Zero capacity: Azure returned rows but all have 0 capacityPerDay
+# ---------------------------------------------------------------------------
+
+
+class TestZeroCapacity:
+    def test_zero_capacity_source_when_all_activities_zero(self):
+        """Sprint where all members have 0 capacityPerDay must report ZERO source."""
+        sprint = _make_sprint(13, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        capacities = [
+            _capacity_row("u1", 0.0, []),
+            _capacity_row("u2", 0.0, []),
+        ]
+        # Ensure activities have 0 (not missing)
+        for row in capacities:
+            row["activities"] = [{"capacityPerDay": 0.0}]
+        ado = _stub_ado(capacities=capacities)
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        assert cap_df.iloc[0]["capacity_source"] == CAPACITY_SOURCE_ZERO
+
+    def test_zero_capacity_team_hours_is_zero(self):
+        """ZERO capacity sprint must report 0.0 for team_capacity_hours, not None."""
+        sprint = _make_sprint(13, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        capacities = [{"teamMember": {"id": "u1"}, "activities": [{"capacityPerDay": 0.0}], "daysOff": []}]
+        ado = _stub_ado(capacities=capacities)
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        row = cap_df.iloc[0]
+        assert float(row["team_capacity_hours"]) == pytest.approx(0.0)
+        assert float(row["capacity_factor"]) == pytest.approx(0.0)
+
+    def test_zero_capacity_per_date_ratio_is_zero(self):
+        """ZERO capacity sprint must have 0.0 per_date_ratio (explicitly no capacity)."""
+        sprint = _make_sprint(13, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        capacities = [{"teamMember": {"id": "u1"}, "activities": [{"capacityPerDay": 0.0}], "daysOff": []}]
+        ado = _stub_ado(capacities=capacities)
+        _, _, per_date_ratio = build_capacity_schedule(ado, [sprint], _WORKING)
+        # May 28 is a Thursday — working day
+        assert per_date_ratio.get(dt.date(2026, 5, 28)) == pytest.approx(0.0)
+
+    def test_zero_capacity_not_confused_with_no_activities(self):
+        """A member with empty activities list yields 0 cap → ZERO state (not 1.0 fallback)."""
+        sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
+        # Row exists but activities is empty — previously triggered cap = 1.0 fallback
+        capacities = [{"teamMember": {"id": "u1"}, "activities": [], "daysOff": []}]
+        ado = _stub_ado(capacities=capacities)
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        row = cap_df.iloc[0]
+        # Must NOT use the 1.0 fallback — Azure said 0 hours
+        assert row["capacity_source"] == CAPACITY_SOURCE_ZERO
+        assert float(row["team_capacity_hours"]) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Carry-forward: future sprints inherit from last configured sprint
+# ---------------------------------------------------------------------------
+
+
+class TestCarryForward:
+    def _configured_sprint_capacities(self):
+        return [
+            _capacity_row("alice", 6.5, []),
+            _capacity_row("bob", 6.5, []),
+        ]
+
+    def test_missing_sprint_gets_carried_forward(self):
+        """A future MISSING sprint should inherit baseline from the last CONFIGURED sprint."""
+        configured = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        future = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-12":
+                return self._configured_sprint_capacities()
+            return []  # future sprint has no capacity
+
+        ado = MagicMock()
+        ado.get_team_days_off.return_value = []
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, cap_df, _ = build_capacity_schedule(ado, [configured, future], _WORKING)
+        future_row = cap_df[cap_df["sprint_name"] == "Sprint 13"].iloc[0]
+        assert future_row["capacity_source"] == CAPACITY_SOURCE_CARRIED
+
+    def test_carried_forward_sprint_has_nonzero_capacity(self):
+        """Carried-forward sprint must have team_capacity_hours > 0."""
+        configured = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        future = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-12":
+                return self._configured_sprint_capacities()
+            return []
+
+        ado = MagicMock()
+        ado.get_team_days_off.return_value = []
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, cap_df, _ = build_capacity_schedule(ado, [configured, future], _WORKING)
+        future_row = cap_df[cap_df["sprint_name"] == "Sprint 13"].iloc[0]
+        assert float(future_row["team_capacity_hours"]) > 0.0
+
+    def test_carried_forward_per_date_ratio_is_nonzero(self):
+        """Working days in a carried-forward sprint must have per_date_ratio > 0."""
+        configured = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        future = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-12":
+                return self._configured_sprint_capacities()
+            return []
+
+        ado = MagicMock()
+        ado.get_team_days_off.return_value = []
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, _, per_date_ratio = build_capacity_schedule(ado, [configured, future], _WORKING)
+        # Jun 11 is a Thursday
+        assert per_date_ratio.get(dt.date(2026, 6, 11), 0.0) == pytest.approx(1.0)
+
+    def test_carried_forward_uses_target_sprint_team_days_off(self):
+        """Carry-forward applies the future sprint's own team days off on top."""
+        configured = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        future = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        def _get_team_days_off(iteration_id):
+            if iteration_id == "iter-13":
+                return [_team_day_off("2026-06-11")]
+            return []
+
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-12":
+                return self._configured_sprint_capacities()
+            return []
+
+        ado = MagicMock()
+        ado.get_team_days_off.side_effect = _get_team_days_off
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, cap_df, per_date_ratio = build_capacity_schedule(ado, [configured, future], _WORKING)
+        future_row = cap_df[cap_df["sprint_name"] == "Sprint 13"].iloc[0]
+        # Jun 11 is a team day off for the future sprint
+        assert per_date_ratio[dt.date(2026, 6, 11)] == 0.0
+        # planned_working_days should be reduced by the team day off
+        assert int(future_row["planned_working_days"]) < int(future_row["normal_working_days"])
+
+    def test_carried_forward_uses_target_sprint_individual_days_off(self):
+        """Carry-forward applies individual days off returned for the future sprint."""
+        configured = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        future = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        # Future sprint has no configured capacity, but alice has a day off
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-12":
+                return self._configured_sprint_capacities()
+            # No capacity rows for future sprint — carry-forward kicks in
+            return []
+
+        # For carried-forward sprints, member_days_off comes from the fetched metadata
+        # (which is empty since no capacity rows returned).  The test verifies that
+        # carrying forward does not silently block individual days off from working.
+        ado = MagicMock()
+        ado.get_team_days_off.return_value = []
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, cap_df, _ = build_capacity_schedule(ado, [configured, future], _WORKING)
+        future_row = cap_df[cap_df["sprint_name"] == "Sprint 13"].iloc[0]
+        # carried_forward; no individual days off → capacity_factor should be 1.0
+        assert future_row["capacity_source"] == CAPACITY_SOURCE_CARRIED
+        assert float(future_row["capacity_factor"]) == pytest.approx(1.0)
+
+    def test_zero_capacity_is_not_carried_forward(self):
+        """A ZERO capacity sprint must not update the carry-forward baseline."""
+        configured = _make_sprint(11, dt.date(2026, 5, 14), dt.date(2026, 5, 27))
+        zero_sprint = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        missing_sprint = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-11":
+                return self._configured_sprint_capacities()
+            if iteration_id == "iter-12":
+                # Zero capacity: rows exist but all 0
+                return [{"teamMember": {"id": "u1"}, "activities": [{"capacityPerDay": 0.0}], "daysOff": []}]
+            return []  # missing
+
+        ado = MagicMock()
+        ado.get_team_days_off.return_value = []
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, cap_df, _ = build_capacity_schedule(ado, [configured, zero_sprint, missing_sprint], _WORKING)
+        missing_row = cap_df[cap_df["sprint_name"] == "Sprint 13"].iloc[0]
+        # Should carry from sprint 11 (alice+bob, 6.5/day each), NOT from sprint 12's zero
+        assert missing_row["capacity_source"] == CAPACITY_SOURCE_CARRIED
+        assert float(missing_row["team_capacity_hours"]) > 0.0
+
+    def test_multiple_missing_sprints_all_get_carried(self):
+        """Multiple consecutive future sprints all receive carry-forward capacity."""
+        configured = _make_sprint(11, dt.date(2026, 5, 14), dt.date(2026, 5, 27))
+        future1 = _make_sprint(12, dt.date(2026, 5, 28), dt.date(2026, 6, 10))
+        future2 = _make_sprint(13, dt.date(2026, 6, 11), dt.date(2026, 6, 24))
+
+        def _get_capacities(iteration_id):
+            if iteration_id == "iter-11":
+                return self._configured_sprint_capacities()
+            return []
+
+        ado = MagicMock()
+        ado.get_team_days_off.return_value = []
+        ado.get_capacities.side_effect = _get_capacities
+        ado.get_iteration_capacities.return_value = {}
+
+        _, cap_df, _ = build_capacity_schedule(ado, [configured, future1, future2], _WORKING)
+        for name in ("Sprint 12", "Sprint 13"):
+            row = cap_df[cap_df["sprint_name"] == name].iloc[0]
+            assert row["capacity_source"] == CAPACITY_SOURCE_CARRIED, f"{name} should be CARRIED"
+            assert float(row["team_capacity_hours"]) > 0.0, f"{name} should have non-zero capacity"
+
+    def test_first_sprint_with_no_prior_stays_missing(self):
+        """If there is no prior configured sprint, MISSING remains (nothing to carry)."""
+        sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
+        ado = _stub_ado(capacities=[])
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        assert cap_df.iloc[0]["capacity_source"] == CAPACITY_SOURCE_MISSING
+
+    def test_capacity_source_configured_is_preserved(self):
+        """A sprint with real capacity rows must stay CONFIGURED (not overridden)."""
+        sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
+        capacities = [_capacity_row("u1", 6.5, [])]
+        ado = _stub_ado(capacities=capacities)
+        _, cap_df, _ = build_capacity_schedule(ado, [sprint], _WORKING)
+        assert cap_df.iloc[0]["capacity_source"] == CAPACITY_SOURCE_CONFIGURED
