@@ -10,6 +10,97 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.4] — 2026-06-02
+
+### Fixed
+
+- **Future sprint capacity reported as zero** (`ado_sync.py` —
+  `fetch_capacities_for_sprint`, `_fetch_sprint_metadata`,
+  `build_capacity_schedule`): three related bugs caused future sprints with no
+  capacity configured in Azure DevOps to be treated as having **zero capacity**,
+  breaking Monte Carlo forecasts for any date range beyond the last configured
+  sprint.
+
+  **Bug 1 — `cap = 1.0` fallback fabricated capacity (Iteration 13 symptom).**
+  When Azure returned capacity rows whose `activities` list was empty or whose
+  `capacityPerDay` was 0, the code silently substituted 1.0 h/day per member.
+  A team of 8 members over a 10-day sprint therefore reported
+  `team_capacity_hours = 80` and `capacity_factor = 1.0` — appearing fully
+  available — when Azure was actually recording 0 configured hours.
+  The fallback is removed; the new `zero_capacity` source state records this
+  honestly.
+
+  **Bug 2 — `max(1.0, …)` fallback zeroed future-sprint simulation days.**
+  When no capacity rows were returned at all (common for future sprints), the
+  per-sprint `baseline_per_day` was forced to 1.0.  In the per-day loop this
+  produced `available = 0.0 / 1.0 = 0.0` → `per_date_ratio[d] = 0.0` for
+  every working day in the sprint.  The simulation then treated every day in
+  future sprints as a non-working day, making all forecasts pessimistically
+  short.  Removing the fallback lets `baseline_per_day = 0.0` trigger the
+  `else 1.0` ratio branch, correctly treating unconfigured sprints as
+  full-capacity.
+
+  **Bug 3 — no carry-forward for future sprints.**
+  A new Phase 1.5 in `build_capacity_schedule` iterates sprints chronologically
+  and carries the last `azure_configured` sprint's per-member baseline forward
+  to any subsequent `missing_capacity` sprint.  The target sprint's own team
+  days off and individual days off (returned by Azure even when capacity is not
+  yet configured) are applied on top.  `zero_capacity` sprints are not carried
+  forward — they represent an explicit Azure configuration and are preserved
+  as-is.
+
+- **`iteration_summary_team_days_off_count` misnamed and incorrectly applied.**
+  Azure's `iterationcapacities` → `teamTotalDaysOff` field counts every member
+  day off (team-wide and individual), not only team-wide schedule days.  A
+  sprint where 7 members each took one individual day off therefore reported
+  `iteration_summary_team_days_off_count = 7` even though
+  `team_days_off_dates` was blank.  The field has been:
+  - renamed to `ado_team_total_days_off_count` (raw Azure value, kept for
+    auditing);
+  - never used to adjust `planned_working_days` (it never should have been).
+
+- **`per_user_capacity` exported as `[object Object]`.**
+  The column stored a Python `list` of dicts in the DataFrame.  In CSV export
+  and some Streamlit display contexts this rendered as an unreadable object
+  reference.  The column is now serialised with `json.dumps` so it appears as a
+  proper JSON string in any export context.
+
+### Added
+
+- **`capacity_source` column** in the Sprint capacity schedule:
+  - `azure_configured` — Azure returned capacity rows with at least one
+    non-zero `capacityPerDay`.
+  - `missing_capacity` — Azure returned no rows; capacity fields are `None`
+    (not zero); simulation uses 1.0 ratio.
+  - `zero_capacity` — Azure returned rows but every member has 0
+    `capacityPerDay`; numeric fields are 0.
+  - `carried_forward` — no Azure data; baseline inherited from the most recent
+    `azure_configured` sprint.
+
+- **`team_days_off_count` column** — count of working days off for the whole
+  team derived from the team days-off endpoint only.  Individual member days
+  off do not appear here.
+
+- **`calculate_sprint_capacity` pure function** — all per-sprint arithmetic
+  extracted into a standalone, I/O-free function.  Accepts raw ADO inputs and
+  returns every capacity field plus `per_date_ratios`.  Fully testable without
+  Streamlit or Azure credentials.
+
+- **22 new tests** covering:
+  - `missing_capacity` state produces `None` for numeric fields and 1.0
+    per_date_ratio (not 0.0).
+  - `zero_capacity` state produces 0.0 fields and 0.0 per_date_ratio.
+  - Carry-forward: future sprints inherit baseline, team/individual days off
+    for the target sprint are still applied.
+  - `zero_capacity` is not carried forward.
+  - Multiple consecutive future sprints all receive carry-forward.
+  - `ado_team_total_days_off_count` is a diagnostic field only; it does not
+    reduce `planned_working_days`.
+  - `team_days_off_count` counts team-endpoint days only.
+  - `per_user_capacity` is a JSON string.
+
+---
+
 ## [0.1.3] — 2026-06-02
 
 ### Fixed

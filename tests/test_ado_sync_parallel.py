@@ -93,11 +93,37 @@ class TestFetchSprintMetadata:
         assert meta.baseline_per_day == pytest.approx(10.0)
         assert meta.baseline_by_member == {"u1": 6.0, "u2": 4.0}
 
-    def test_baseline_per_day_fallback_when_no_capacities(self):
+    def test_baseline_per_day_is_zero_when_no_capacities(self):
+        """With no capacity rows from Azure, baseline_per_day must be 0 (not a 1.0 fallback)."""
         sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
         ado = _stub_ado(capacities=[])
         meta = _fetch_sprint_metadata(ado, sprint)
-        assert meta.baseline_per_day >= 1.0
+        assert meta.baseline_per_day == pytest.approx(0.0)
+
+    def test_capacity_source_missing_when_no_rows(self):
+        """capacity_source must be MISSING when Azure returns no capacity rows."""
+        from agile_mc.ado_sync import CAPACITY_SOURCE_MISSING
+
+        sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
+        ado = _stub_ado(capacities=[])
+        meta = _fetch_sprint_metadata(ado, sprint)
+        assert meta.capacity_source == CAPACITY_SOURCE_MISSING
+
+    def test_capacity_source_configured_when_rows_present(self):
+        """capacity_source must be CONFIGURED when Azure returns non-zero capacity rows."""
+        from agile_mc.ado_sync import CAPACITY_SOURCE_CONFIGURED
+
+        sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
+        capacities = [
+            {
+                "teamMember": {"id": "u1"},
+                "activities": [{"capacityPerDay": 6.5}],
+                "daysOff": [],
+            }
+        ]
+        ado = _stub_ado(capacities=capacities)
+        meta = _fetch_sprint_metadata(ado, sprint)
+        assert meta.capacity_source == CAPACITY_SOURCE_CONFIGURED
 
     def test_iteration_summary_days_off_parsed(self):
         sprint = _make_sprint(1, dt.date(2026, 1, 5), dt.date(2026, 1, 16))
