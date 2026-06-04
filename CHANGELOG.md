@@ -10,6 +10,46 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.5] — 2026-06-04
+
+### Fixed
+
+- **ADO sync failures produced a misleading "Check your connection settings" error**
+  (`app.py`): The generic `except Exception` handler showed this message for *all*
+  failures, including data-processing errors that occur well after the ADO API
+  calls have already succeeded (HTTP 200). The handler now:
+  - Calls `logger.exception()` so the **full Python traceback** is written to
+    the log file on every failure — previously the stack trace was silently
+    discarded, making root-cause analysis impossible.
+  - Reserves the "Check your connection settings" wording for HTTP-level errors
+    (`requests.HTTPError`) only.
+  - Shows the actual exception type and message for all other failures, together
+    with the log file path so users can inspect the full traceback.
+
+- **`warnings` column in Sprint capacity schedule was a Python list** (`ado_sync.py`):
+  `calculate_sprint_capacity` returned `"warnings": [...]` (a Python list) which
+  was stored as an object-dtype list column in `cap_df`. This was inconsistent
+  with the `per_user_capacity` column (a JSON string) and a latent serialisation
+  risk. All three capacity-source branches (`missing_capacity`, `zero_capacity`,
+  and `configured`/`carried_forward`) now return `"warnings": json.dumps([...])`.
+
+### Added
+
+- **10 regression tests** (`tests/test_ado_sync_parallel.py`):
+  - Duplicate sprint names with different iteration IDs produce the correct row
+    count and do not crash.
+  - All-zero capacity rows (`zero_capacity` source) produce valid output and a
+    JSON-string `warnings` column.
+  - Missing capacity rows mixed with configured sprints do not raise any exception.
+  - `warnings` column is always a JSON-parseable string for every `capacity_source`.
+  - Carry-forward from the last configured sprint works when the final sprint has
+    no capacity data.
+
+- **App settings section in README**: documents the log-level control and log file
+  location so users know where to look when a sync error directs them there.
+
+---
+
 ## [0.1.4] — 2026-06-02
 
 ### Fixed
