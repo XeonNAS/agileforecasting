@@ -156,10 +156,7 @@ class TestParseQueryIdFromUrlOrGuid:
         assert parse_query_id_from_url_or_guid(url) == _GUID
 
     def test_guid_with_extra_path_and_query_params(self):
-        url = (
-            f"https://dev.azure.com/org/proj/_queries/query/Shared%20Queries/{_GUID}"
-            "/?fullScreen=true&tempQueryId=abc"
-        )
+        url = f"https://dev.azure.com/org/proj/_queries/query/Shared%20Queries/{_GUID}/?fullScreen=true&tempQueryId=abc"
         assert parse_query_id_from_url_or_guid(url) == _GUID
 
     def test_url_encoded_query_id(self):
