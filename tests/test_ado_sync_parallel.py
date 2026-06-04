@@ -350,9 +350,7 @@ class TestDuplicateSprintNames:
         ado.get_capacities.side_effect = _get_capacities
         ado.get_iteration_capacities.return_value = {}
 
-        sprints_df, cap_df, per_date_ratio = build_capacity_schedule(
-            ado, [sp_cfg, sp_zero, sp_miss], _WORKING
-        )
+        sprints_df, cap_df, per_date_ratio = build_capacity_schedule(ado, [sp_cfg, sp_zero, sp_miss], _WORKING)
         assert len(cap_df) == 3
         assert dt.date(2026, 1, 5) in per_date_ratio
         assert dt.date(2026, 1, 19) in per_date_ratio
