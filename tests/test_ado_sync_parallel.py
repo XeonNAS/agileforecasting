@@ -260,7 +260,9 @@ class TestFetchDailyThroughput:
 
     def test_invalid_query_guid_raises(self):
         ado = MagicMock()
-        with pytest.raises(ValueError, match="Could not parse saved query GUID"):
+        # SavedQueryParseError subclasses ValueError, so catching ValueError still
+        # works; the message points at the query URL, not connection settings.
+        with pytest.raises(ValueError, match="Saved query URL could not be recognised"):
             fetch_daily_throughput_from_saved_query(
                 ado, "not-a-guid", self._HISTORY_START, self._HISTORY_END, self._WORKING, set()
             )

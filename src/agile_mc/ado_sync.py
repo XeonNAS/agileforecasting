@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -655,16 +656,121 @@ def build_capacity_schedule(
 # ---------------------------------------------------------------------------
 
 
+# Canonical Azure DevOps query GUID: 8-4-4-4-12 hex groups.
+_GUID_RE = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
+#: User-facing message shown when a saved query URL/GUID cannot be recognised.
+SAVED_QUERY_PARSE_MESSAGE = (
+    "Saved query URL could not be recognised. "
+    "Open the saved Azure DevOps query and copy its URL, or paste the query GUID."
+)
+
+
+class SavedQueryParseError(ValueError):
+    """Raised when a saved-query URL or GUID cannot be parsed into a query GUID.
+
+    Subclasses ValueError so existing ``except ValueError`` handlers keep
+    working, while callers that want the precise validation message can catch
+    this type specifically.
+    """
+
+
 def parse_query_id_from_url_or_guid(s: str) -> Optional[str]:
+    """Extract an Azure DevOps saved-query GUID from a raw GUID or any query URL.
+
+    Accepts the common Azure DevOps query URL variants, including:
+      * a bare GUID (``a1b2c3d4-....``)
+      * ``.../_queries/query/<guid>/`` and ``.../_queries/query-edit/<guid>``
+      * URLs with ``?queryId=<guid>`` or ``?id=<guid>`` in the query string
+      * URLs where the GUID appears elsewhere in the path or query string
+        (extra path segments, folders, trailing parameters)
+      * URL-encoded values (``%2D`` for ``-`` etc.)
+
+    Returns the lowercased GUID, or ``None`` if no GUID can be found.  Parsing
+    is intentionally permissive about *where* the GUID sits, but still strict
+    about the GUID *shape*, so non-query text (e.g. a backlog URL with no GUID)
+    returns ``None`` rather than a false positive.
+    """
     s = (s or "").strip()
     if not s:
         return None
-    if re.fullmatch(r"[0-9a-fA-F\-]{36}", s):
+
+    # Fast path: the whole value is a canonical GUID.
+    if re.fullmatch(_GUID_RE, s):
         return s.lower()
-    m = re.search(r"/_queries/query/([0-9a-fA-F\-]{36})", s)
+
+    # Decode percent-encoding so encoded GUIDs / separators are matched.
+    decoded = urllib.parse.unquote(s)
+    parsed = urllib.parse.urlparse(decoded)
+
+    # 1) Prefer an explicit query-string parameter (queryId / id / wiql).
+    qs = {k.lower(): v for k, v in urllib.parse.parse_qs(parsed.query).items()}
+    for key in ("queryid", "id", "wiql"):
+        for val in qs.get(key, []):
+            m = re.search(_GUID_RE, val)
+            if m:
+                return m.group(0).lower()
+
+    # 2) Prefer a GUID that directly follows a query path segment.
+    m = re.search(r"/_queries/(?:query|query-edit|edit|folder)/(" + _GUID_RE + r")", decoded)
     if m:
         return m.group(1).lower()
+
+    # 3) Last resort: any canonical GUID anywhere in the (decoded) value.
+    m = re.search(_GUID_RE, decoded)
+    if m:
+        return m.group(0).lower()
+
     return None
+
+
+def validate_saved_query(saved_query_url_or_guid: str) -> str:
+    """Validate a saved-query URL/GUID and return the normalised query GUID.
+
+    Raises :class:`SavedQueryParseError` (with a precise, PAT-free message) when
+    the value cannot be parsed.  Call this *before* the expensive sprint/capacity
+    API calls so an unrecognised query is reported immediately and is not
+    mistaken for a connection problem.
+    """
+    qid = parse_query_id_from_url_or_guid(saved_query_url_or_guid)
+    if not qid:
+        raise SavedQueryParseError(SAVED_QUERY_PARSE_MESSAGE)
+    return qid
+
+
+def describe_ado_sync_error(exc: Exception, log_path: Optional[str] = None) -> str:
+    """Map an ADO sync exception to a precise, PAT-free user-facing message.
+
+    Crucially, this never blames "connection settings" for a saved-query parse
+    error or a downstream data-processing ``ValueError`` — those are validation
+    or computation problems, not connectivity problems.  HTTP/connection errors
+    are handled separately by the caller.
+    """
+    if isinstance(exc, SavedQueryParseError):
+        return str(exc)
+    if isinstance(exc, ValueError):
+        msg = f"ADO sync failed while processing data ({type(exc).__name__}: {exc})."
+        if log_path:
+            msg += (
+                " This is a data-processing error, not a connection problem — "
+                f"see the app log for the full traceback: {log_path}"
+            )
+        return msg
+    msg = f"ADO sync failed ({type(exc).__name__}: {exc})."
+    if log_path:
+        msg += f" Check the app log for the full traceback: {log_path}"
+    return msg
+
+
+def handle_ado_sync_exception(exc: Exception, log: logging.Logger, log_path: Optional[str] = None) -> str:
+    """Log the full traceback for an ADO sync failure and return a user message.
+
+    Centralises catch-block behaviour so the Streamlit UI and the tests share
+    one implementation: always logs at ERROR *with* the traceback, and returns
+    a precise message that never mislabels a ValueError as a connection failure.
+    """
+    log.exception("ADO sync failed: %s: %s", type(exc).__name__, exc)
+    return describe_ado_sync_error(exc, log_path)
 
 
 def fetch_daily_throughput_from_saved_query(
@@ -676,9 +782,7 @@ def fetch_daily_throughput_from_saved_query(
     team_days_off_all: Set[dt.date],
     done_date_field: str = "AUTO",
 ) -> pd.DataFrame:
-    qid = parse_query_id_from_url_or_guid(saved_query_url_or_guid)
-    if not qid:
-        raise ValueError("Could not parse saved query GUID from the provided value")
+    qid = validate_saved_query(saved_query_url_or_guid)
 
     # -- WIQL query: retrieve matching work item IDs ----------------------
     _t_wiql = time.perf_counter()
