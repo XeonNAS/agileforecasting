@@ -16,10 +16,13 @@ import streamlit as st
 
 from agile_mc.ado_client import AdoClient, AdoRef
 from agile_mc.ado_sync import (
+    SavedQueryParseError,
     build_capacity_schedule,
     extract_sprint_number,
     fetch_daily_throughput_from_saved_query,
     fetch_sprints,
+    handle_ado_sync_exception,
+    validate_saved_query,
     weekday_indexes_from_team_settings,
 )
 from agile_mc.app_logging import LOG_LEVEL_OPTIONS, configure_logging, load_log_level, save_log_level
@@ -404,11 +407,22 @@ if refresh:
         try:
             _t_sync_start = time.perf_counter()
             ado = AdoClient(AdoRef(org, project, team), pat)
+
+            # Validate the saved query URL/GUID *before* any expensive sprint or
+            # capacity API calls.  If it cannot be parsed we fail fast with a
+            # precise message instead of doing ~150 API calls and then raising a
+            # ValueError that looks like a connection failure.
+            _app_logger.info("sync phase: validate saved query")
+            validate_saved_query(query)
+
+            _app_logger.info("sync phase: team settings")
             team_settings = ado.get_team_settings()
             working_days = team_settings.get("workingDays") or ["monday", "tuesday", "wednesday", "thursday", "friday"]
             working_weekdays = weekday_indexes_from_team_settings(list(working_days))
 
+            _app_logger.info("sync phase: fetch sprints")
             sprints = fetch_sprints(ado)
+            _app_logger.info("sync phase: build capacity schedule")
             sprints_df, capacity_df, per_date_ratio = build_capacity_schedule(ado, sprints, working_weekdays)
 
             team_days_off_all: set = set()
@@ -423,6 +437,7 @@ if refresh:
             history_end = forecast_start - dt.timedelta(days=1)
             history_start = history_end - dt.timedelta(days=history_days)
 
+            _app_logger.info("sync phase: fetch throughput from saved query")
             daily_df = fetch_daily_throughput_from_saved_query(
                 ado=ado,
                 saved_query_url_or_guid=query,
@@ -459,6 +474,7 @@ if refresh:
                 else pd.DataFrame(columns=["iteration_id", "sprint_name", "start_date", "end_date", "done_count"])
             )
 
+            _app_logger.info("sync phase: complete")
             _app_logger.info(
                 "ADO sync complete in %.1fs (org=%s project=%s team=%s history=%dd)",
                 time.perf_counter() - _t_sync_start,
@@ -510,19 +526,28 @@ if refresh:
             # The flag is consumed before the form on the next rerun.
             st.session_state["_clear_pat_on_next_run"] = True
 
+        except SavedQueryParseError as e:
+            # Query URL/GUID could not be parsed — this is a validation problem,
+            # never a connection problem.  Show the precise message and stop
+            # before (or instead of) any further data processing.
+            st.error(handle_ado_sync_exception(e, _app_logger, _log_path))
+            if not data_already_loaded:
+                st.stop()
         except requests.HTTPError as e:
             _status = e.response.status_code if e.response is not None else "unknown"
             _app_logger.exception("ADO sync failed: HTTP %s", _status)
             st.error(f"ADO request failed (HTTP {_status}). Check your Org, Project, Team, PAT, and Query settings.")
             if not data_already_loaded:
                 st.stop()
+        except ValueError as e:
+            # Downstream data-processing ValueErrors must not be reported as a
+            # connection-settings failure.  Log the traceback; show a precise,
+            # PAT-free message.
+            st.error(handle_ado_sync_exception(e, _app_logger, _log_path))
+            if not data_already_loaded:
+                st.stop()
         except Exception as e:
-            _app_logger.exception("ADO sync failed: %s: %s", type(e).__name__, e)
-            st.error(
-                f"ADO sync failed ({type(e).__name__}: {e}). "
-                "If your connection settings are correct, this is a data-processing error — "
-                f"check the app log for the full traceback: {_log_path}"
-            )
+            st.error(handle_ado_sync_exception(e, _app_logger, _log_path))
             if not data_already_loaded:
                 st.stop()
 

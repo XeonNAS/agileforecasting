@@ -101,7 +101,7 @@ Open <http://localhost:8501> in your browser.
 | Project | e.g. `MyProject` |
 | Team | e.g. `MyProject Team` |
 | PAT | Personal Access Token. Auto-populated from secure storage if saved. |
-| Saved Query URL or GUID | A "Done by date" query GUID or its full URL. |
+| Saved Query URL or GUID | A "Done by date" query GUID or its full URL. The common Azure DevOps query URL formats are accepted — the full `_queries/query/<id>` URL, a `?queryId=<id>` link, or just the bare GUID. If the value isn't recognised the app tells you immediately, before contacting Azure DevOps. |
 
 ### App settings (bottom of sidebar)
 

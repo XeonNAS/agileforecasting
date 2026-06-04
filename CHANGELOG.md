@@ -10,6 +10,50 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.6] — 2026-06-04
+
+### Fixed
+
+- **Unrecognised saved-query URLs failed as a false "connection settings" error**
+  (`ado_sync.py`, `app.py`): `parse_query_id_from_url_or_guid` only accepted a raw
+  GUID or a `/_queries/query/<guid>` URL. Other valid Azure DevOps query URL formats
+  (`?queryId=<guid>`, `query-edit/<guid>`, GUIDs behind extra path segments or
+  folders, and URL-encoded values) returned `None`, which raised a `ValueError`
+  inside `fetch_daily_throughput_from_saved_query` — *after* ~150 sprint/capacity
+  API calls had already succeeded (HTTP 200). v0.1.5 stopped that `ValueError` from
+  being mislabelled and started logging the traceback, but the underlying parser was
+  still the root cause. This release fixes the parser itself:
+  - `parse_query_id_from_url_or_guid` now recognises raw GUIDs, `/query/<guid>` and
+    `/query-edit/<guid>` paths, `?queryId=`/`?id=` query strings, GUIDs appearing
+    anywhere in the path/query, and URL-encoded values — while still returning `None`
+    for non-query text (strict GUID shape, so no false positives).
+  - The saved query is now validated **before** the expensive sprint/capacity API
+    calls. An unrecognised query stops the sync immediately with a precise message:
+    *"Saved query URL could not be recognised. Open the saved Azure DevOps query and
+    copy its URL, or paste the query GUID."*
+
+### Changed
+
+- **ADO sync error handling** (`app.py`, `ado_sync.py`): a new
+  `SavedQueryParseError(ValueError)` plus `describe_ado_sync_error()` /
+  `handle_ado_sync_exception()` helpers ensure query-parse and downstream
+  data-processing `ValueError`s are never reported as connection failures, every
+  catch block logs the full traceback, and messages never include the PAT. Added
+  `sync phase: …` info logging around each sync stage (validate query, team
+  settings, fetch sprints, build capacity schedule, fetch throughput, complete) so
+  the failing stage is obvious in the log.
+
+### Added
+
+- **Regression tests** (`tests/test_ado_sync_utils.py`): raw GUID, `/query/<guid>/`,
+  `?queryId=<guid>`, GUID with extra path/query params, URL-encoded GUID,
+  `visualstudio.com` host variant, and invalid/empty input → clear validation error;
+  plus tests that the UI error classification logs the traceback and does not label a
+  `ValueError` as a connection failure. Updated the existing message assertion in
+  `tests/test_ado_sync_parallel.py`.
+
+---
+
 ## [0.1.5] — 2026-06-04
 
 ### Fixed
