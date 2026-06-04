@@ -404,7 +404,7 @@ def calculate_sprint_capacity(
             "capacity_source": capacity_source,
             "per_user_capacity": json.dumps([]),
             "per_date_ratios": per_date_ratios,
-            "warnings": warnings,
+            "warnings": json.dumps(warnings),
         }
 
     # ------------------------------------------------------------------
@@ -445,7 +445,7 @@ def calculate_sprint_capacity(
             "capacity_source": capacity_source,
             "per_user_capacity": json.dumps(per_user_capacity),
             "per_date_ratios": per_date_ratios,
-            "warnings": warnings,
+            "warnings": json.dumps(warnings),
         }
 
     # ------------------------------------------------------------------
@@ -522,7 +522,7 @@ def calculate_sprint_capacity(
         "capacity_source": capacity_source,
         "per_user_capacity": json.dumps(per_user_capacity),
         "per_date_ratios": per_date_ratios,
-        "warnings": warnings,
+        "warnings": json.dumps(warnings),
     }
 
 

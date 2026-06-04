@@ -512,11 +512,17 @@ if refresh:
 
         except requests.HTTPError as e:
             _status = e.response.status_code if e.response is not None else "unknown"
+            _app_logger.exception("ADO sync failed: HTTP %s", _status)
             st.error(f"ADO request failed (HTTP {_status}). Check your Org, Project, Team, PAT, and Query settings.")
             if not data_already_loaded:
                 st.stop()
         except Exception as e:
-            st.error(f"ADO sync failed ({type(e).__name__}). Check your connection settings.")
+            _app_logger.exception("ADO sync failed: %s: %s", type(e).__name__, e)
+            st.error(
+                f"ADO sync failed ({type(e).__name__}: {e}). "
+                "If your connection settings are correct, this is a data-processing error — "
+                f"check the app log for the full traceback: {_log_path}"
+            )
             if not data_already_loaded:
                 st.stop()
 
