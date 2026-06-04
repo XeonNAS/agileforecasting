@@ -103,6 +103,23 @@ Open <http://localhost:8501> in your browser.
 | PAT | Personal Access Token. Auto-populated from secure storage if saved. |
 | Saved Query URL or GUID | A "Done by date" query GUID or its full URL. |
 
+### App settings (bottom of sidebar)
+
+| Control | Description |
+|---|---|
+| Log level | Controls log verbosity. `FATAL` (default) logs only critical errors; `DEBUG` logs everything. |
+
+The log file path is shown beneath the log-level selector. If an ADO sync fails
+with a data-processing error the banner message will include the exact path —
+open that file to see the full Python traceback.
+
+Default log file locations:
+
+| Platform | Path |
+|---|---|
+| Linux / macOS | `~/.local/state/AgileForecasting/logs/agileforecasting.log` |
+| Windows | `%LOCALAPPDATA%\AgileForecasting\logs\agileforecasting.log` |
+
 ---
 
 ## PAT handling
