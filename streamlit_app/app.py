@@ -712,22 +712,76 @@ if mode.startswith("How Many"):
 
 else:
     items_remaining: int = int(st.session_state["cfg_items_remaining"])
-    horizon_days = 180
-    dates = [forecast_start + dt.timedelta(days=i) for i in range(horizon_days)]
-    working_dates = [d for d in dates if is_working_day(d)]
+    # simulate_when_daily walks forward one working day per simulated step, up to
+    # max_days steps. The working-day list handed to it must therefore contain at
+    # least max_days entries — otherwise it runs out of dates and pins every
+    # unfinished simulation to the single last date in the list, producing an
+    # artificial pileup (and a wrong "When" calendar) at that boundary instead of
+    # a genuine later completion date.
+    max_when_days = 800
+    _scan_limit_days = 3650  # 10 calendar years — safety bound for all-days-off configs
+    working_dates: List[dt.date] = []
+    _scanned = 0
+    while len(working_dates) < max_when_days and _scanned < _scan_limit_days:
+        d = forecast_start + dt.timedelta(days=_scanned)
+        if is_working_day(d):
+            working_dates.append(d)
+        _scanned += 1
     if not working_dates:
         st.error("No working days in the forecast window. Check team settings / days off.")
         st.stop()
 
-    completion_dates = simulate_when_daily(
+    when_result = simulate_when_daily(
         history_counts=np.rint(hist_daily_counts.astype(float) * project_ratio).astype(int),
         forecast_dates=working_dates,
         per_date_ratio=per_date_ratio,
         items_remaining=items_remaining,
         n_sims=n_sims,
         seed=seed,
-        max_days=800,
+        max_days=max_when_days,
     )
+    completion_dates = when_result.completion_dates
+
+    # If a large enough share of simulations never finish within max_when_days,
+    # the P95 completion date (which sizes the calendar) is itself a placeholder,
+    # not a genuine estimate — rendering a calendar in that case would silently
+    # misrepresent the forecast. 5% mirrors the P95 confidence level the
+    # calendar is built around: once P95 falls into "unfinished", the calendar
+    # is no longer trustworthy.
+    _UNFINISHED_HORIZON_THRESHOLD = 0.05
+    unfinished_fraction = (when_result.unfinished_count / n_sims) if n_sims else 0.0
+    if unfinished_fraction >= _UNFINISHED_HORIZON_THRESHOLD:
+        _app_logger.warning(
+            "When forecast horizon exceeded: %d/%d simulations (%.1f%%) did not finish within "
+            "%d working days (%s to %s), items_remaining=%d",
+            when_result.unfinished_count,
+            n_sims,
+            unfinished_fraction * 100,
+            max_when_days,
+            working_dates[0].isoformat(),
+            working_dates[-1].isoformat(),
+            items_remaining,
+        )
+
+        @st.dialog("Forecast horizon exceeded")
+        def _unfinished_horizon_dialog() -> None:
+            st.write(
+                f"**{when_result.unfinished_count:,} of {n_sims:,} simulations "
+                f"({unfinished_fraction:.0%}) did not finish** within the "
+                f"{max_when_days}-working-day horizon "
+                f"({working_dates[0]:%d %b %Y} – {working_dates[-1]:%d %b %Y})."
+            )
+            st.write(
+                "A realistic When calendar cannot be produced for this many "
+                "items remaining at the current throughput and capacity. "
+                "Reduce items remaining, increase capacity, or check for "
+                "missing/zero throughput history, then rerun the forecast."
+            )
+            if st.button("Close"):
+                st.rerun()
+
+        _unfinished_horizon_dialog()
+        st.stop()
 
     sprints = st.session_state["sprints"]
     sprint_label_by_date: Dict[dt.date, str] = {}

@@ -138,20 +138,21 @@ class TestSimulateWhenDaily:
         start = dt.date(2026, 3, 1)
         dates = self._dates(start, 20)
         result = simulate_when_daily(np.array([5]), dates, {}, items_remaining=0, n_sims=10, seed=0)
-        assert all(d == dates[0] for d in result)
+        assert all(d == dates[0] for d in result.completion_dates)
+        assert result.unfinished_count == 0
 
     def test_output_length_matches_n_sims(self):
         start = dt.date(2026, 3, 1)
         dates = self._dates(start, 30)
         result = simulate_when_daily(np.array([3, 5, 7]), dates, {}, items_remaining=10, n_sims=50, seed=1)
-        assert len(result) == 50
+        assert len(result.completion_dates) == 50
 
     def test_completion_date_within_bounds(self):
         start = dt.date(2026, 3, 1)
         dates = self._dates(start, 60)
         result = simulate_when_daily(np.array([5]), dates, {}, items_remaining=20, n_sims=100, seed=2)
         # All dates should be within the forecast window or equal to the last date (capped)
-        assert all(dates[0] <= d <= dates[-1] for d in result)
+        assert all(dates[0] <= d <= dates[-1] for d in result.completion_dates)
 
     def test_more_remaining_means_later_completion(self):
         start = dt.date(2026, 3, 1)
@@ -159,9 +160,60 @@ class TestSimulateWhenDaily:
         history = np.array([3, 4, 5])
         r_small = simulate_when_daily(history, dates, {}, items_remaining=5, n_sims=300, seed=9)
         r_large = simulate_when_daily(history, dates, {}, items_remaining=50, n_sims=300, seed=9)
-        mean_small = sum(d.toordinal() for d in r_small) / len(r_small)
-        mean_large = sum(d.toordinal() for d in r_large) / len(r_large)
+        mean_small = sum(d.toordinal() for d in r_small.completion_dates) / len(r_small.completion_dates)
+        mean_large = sum(d.toordinal() for d in r_large.completion_dates) / len(r_large.completion_dates)
         assert mean_large > mean_small
+
+    def test_short_forecast_dates_pins_completion_to_last_date(self):
+        """Regression for the When-calendar bug where forecasts crossing a
+        horizon boundary (e.g. into the next year) collapsed onto that boundary
+        date instead of the genuine completion date.
+
+        forecast_dates is walked one entry per simulated working day; once the
+        list runs out, simulate_when_daily reuses forecast_dates[-1] forever
+        rather than extending the calendar. If the caller supplies a window
+        shorter than the work actually needs, every unfinished simulation is
+        silently pinned to that final date — the callers (streamlit_app/app.py)
+        must supply a window at least as long as max_days.
+        """
+        start = dt.date(2026, 7, 23)
+        history = np.array([1])  # deterministic: exactly one item completes per day
+        items_remaining = 50  # needs 50 working days to finish
+
+        short_dates = self._dates(start, 10)  # far too short
+        long_dates = self._dates(start, 60)  # long enough
+
+        short_result = simulate_when_daily(
+            history, short_dates, {}, items_remaining=items_remaining, n_sims=5, seed=0, max_days=800
+        )
+        long_result = simulate_when_daily(
+            history, long_dates, {}, items_remaining=items_remaining, n_sims=5, seed=0, max_days=800
+        )
+
+        # Too-short horizon: every simulation collapses onto the last supplied date,
+        # but unfinished_count stays 0 since these sims did complete — they just ran
+        # out of real dates to report. This is exactly why callers must size their
+        # date window to max_days rather than relying on unfinished_count alone.
+        assert all(d == short_dates[-1] for d in short_result.completion_dates)
+        assert short_result.unfinished_count == 0
+        # Long-enough horizon: the true completion date, items_remaining working
+        # days after start, is reported instead.
+        true_completion = start + dt.timedelta(days=items_remaining - 1)
+        assert all(d == true_completion for d in long_result.completion_dates)
+        assert short_result.completion_dates[0] != long_result.completion_dates[0]
+
+    def test_unfinished_count_reflects_simulations_hitting_max_days(self):
+        """Regression: when items genuinely can't finish within max_days (not
+        merely because forecast_dates was too short), unfinished_count must
+        report it so callers can warn the user instead of silently plotting a
+        placeholder date as a real forecast."""
+        start = dt.date(2026, 7, 23)
+        dates = self._dates(start, 900)  # plenty of dates — not the bottleneck
+        history = np.array([0])  # zero throughput: can never finish
+
+        result = simulate_when_daily(history, dates, {}, items_remaining=10, n_sims=20, seed=0, max_days=50)
+        assert result.unfinished_count == 20
+        assert all(d == dates[-1] for d in result.completion_dates)
 
 
 # ---------------------------------------------------------------------------
