@@ -190,12 +190,14 @@ def build_when_calendar_figure(
     dow = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     cal = pycal.Calendar(firstweekday=0)
 
+    # Opaque, WCAG-AA+ fills against the black cell text (>=14:1 contrast each),
+    # replacing the previous washed-out rgba fills (~1.1-1.6:1 against white).
     colors = {
-        0: "rgba(158, 158, 158, 0.15)",
-        1: "rgba(244, 67, 54, 0.30)",
-        2: "rgba(255, 193, 7, 0.35)",
-        3: "rgba(139, 195, 74, 0.35)",
-        4: "rgba(76, 175, 80, 0.35)",
+        0: "#E0E0E0",
+        1: "#FFCDD2",
+        2: "#FFE0B2",
+        3: "#DCEDC8",
+        4: "#A5D6A7",
     }
     colorscale = [
         (0.00, colors[0]),

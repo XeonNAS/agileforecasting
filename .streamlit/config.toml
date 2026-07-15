@@ -11,3 +11,9 @@ gatherUsageStats = false
 
 [theme]
 base = "light"
+# Defaults leave widget borders near-invisible (~1.2:1 contrast) and the
+# primary button text under WCAG AA (~3.3:1). These values bring both to
+# 4.5:1+ against white/fill.
+primaryColor = "#C62828"
+borderColor = "#757575"
+showWidgetBorder = true
