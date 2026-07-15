@@ -87,6 +87,20 @@ def simulate_how_many_sprint(
     return out
 
 
+@dataclass
+class WhenSimulationResult:
+    """Result of simulate_when_daily.
+
+    unfinished_count is the number of simulations that did not complete
+    within max_days steps. Their completion_dates entry is forecast_dates[-1]
+    — a placeholder, not a genuine completion date — so callers must check
+    unfinished_count before treating the result as a trustworthy forecast.
+    """
+
+    completion_dates: List[dt.date]
+    unfinished_count: int
+
+
 def simulate_when_daily(
     history_counts: np.ndarray,
     forecast_dates: List[dt.date],
@@ -95,15 +109,16 @@ def simulate_when_daily(
     n_sims: int,
     seed: Optional[int] = None,
     max_days: int = 800,
-) -> List[dt.date]:
+) -> WhenSimulationResult:
     rng = np.random.default_rng(seed)
     history = history_counts.astype(float)
     if history.size == 0 or items_remaining <= 0:
         # Return "today" as degenerate
-        return [forecast_dates[0] if forecast_dates else dt.date.today()] * n_sims
+        degenerate = forecast_dates[0] if forecast_dates else dt.date.today()
+        return WhenSimulationResult([degenerate] * n_sims, unfinished_count=0)
 
     out: List[dt.date] = []
-    # Ensure we have some dates to walk; if forecast_dates is only a window, extend by repeating pattern.
+    unfinished_count = 0
     if not forecast_dates:
         forecast_dates = [dt.date.today()]
 
@@ -124,9 +139,12 @@ def simulate_when_daily(
             steps += 1
 
         if remaining > 0:
-            # didn't finish within max_days; set to last date
+            # Did not finish within max_days working days — forecast_dates[-1] is
+            # a placeholder, not a genuine completion date. Callers must surface
+            # unfinished_count rather than silently plotting this as real.
             out.append(forecast_dates[-1])
-    return out
+            unfinished_count += 1
+    return WhenSimulationResult(out, unfinished_count)
 
 
 def completion_cdf_by_date(completion_dates: List[dt.date], dates: List[dt.date]) -> List[float]:
