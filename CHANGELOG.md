@@ -47,6 +47,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   at all, because `rint(0.5) == 0`. The ratio is now applied inside
   `simulate_when_daily` before stochastic rounding.
 
+### Security
+
+- **Dependency pins updated to clear `pip-audit`** (`requirements.lock`): 81 advisories
+  published since July against certifi, cryptography, gitpython, pillow, tornado and
+  urllib3. Streamlit 1.56.0 → 1.66.1, which allows Pillow 13 and replaces Tornado with
+  Starlette/Uvicorn, so tornado and gitpython are no longer installed.
+  cryptography 49.0.0 → 50.0.2, certifi 2026.10.19, urllib3 2.8.0. Regenerated with
+  `uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28`,
+  upgrading only these packages.
+
 ---
 
 ## [0.1.6] — 2026-06-04
