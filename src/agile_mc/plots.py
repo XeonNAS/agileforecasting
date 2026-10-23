@@ -109,6 +109,50 @@ def sprint_throughput_figure(
     return fig
 
 
+def created_vs_finished_figure(created_vs_finished_df: pd.DataFrame, claude_start: dt.date | None = None) -> go.Figure:
+    df = created_vs_finished_df.sort_values("start_date").reset_index(drop=True)
+
+    fig = go.Figure()
+    fig.add_bar(
+        x=df["sprint_name"],
+        y=df["created_count"],
+        name="Created",
+        marker_color="#757575",
+        hovertemplate="%{x}<br>Created: %{y}<extra></extra>",
+    )
+    fig.add_bar(
+        x=df["sprint_name"],
+        y=df["done_count"],
+        name="Finished",
+        hovertemplate="%{x}<br>Finished: %{y}<extra></extra>",
+    )
+    fig.add_scatter(
+        x=df["sprint_name"],
+        y=df["cumulative_net_change"],
+        mode="lines+markers",
+        name="Backlog growth (cumulative)",
+        yaxis="y2",
+        line=dict(color="#C62828"),
+        hovertemplate="%{x}<br>Backlog change since first sprint: %{y:+d}<extra></extra>",
+    )
+    if claude_start is not None:
+        since_positions = np.flatnonzero((claude_period(df["start_date"], claude_start) == SINCE_CLAUDE).to_numpy())
+        if since_positions.size:
+            _mark_claude_start(fig, float(since_positions[0]) - 0.5)
+    fig.update_layout(
+        title="Created vs finished per sprint",
+        barmode="group",
+        xaxis_title="Sprint",
+        yaxis_title="Items",
+        xaxis=dict(type="category", automargin=True),
+        yaxis=dict(rangemode="tozero", automargin=True),
+        yaxis2=dict(title="Backlog growth (cumulative)", overlaying="y", side="right", zeroline=True, automargin=True),
+        margin=dict(l=80, r=120, t=85, b=85),
+        legend=dict(yanchor="top", y=-0.25, xanchor="left", x=0, orientation="h"),
+    )
+    return fig
+
+
 def cycle_time_figure(done_items_df: pd.DataFrame, claude_start: dt.date | None = None) -> go.Figure:
     timed = done_items_df.dropna(subset=["cycle_time_days"]).sort_values("done_date")
     cycle = timed["cycle_time_days"].astype(float)

@@ -21,6 +21,7 @@ from agile_mc.ado_sync import (
     build_sprint_plan,
     daily_throughput_from_done_items,
     extract_sprint_number,
+    fetch_created_items_from_saved_query,
     fetch_done_items_from_saved_query,
     fetch_sprints,
     handle_ado_sync_exception,
@@ -31,10 +32,16 @@ from agile_mc.app_logging import LOG_LEVEL_OPTIONS, configure_logging, load_log_
 from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
 from agile_mc.chart_export import BrowserNotAvailableError, export_plotly_figure
-from agile_mc.flow_metrics import improvement_summary, with_cycle_time
+from agile_mc.flow_metrics import created_vs_finished, describe_backlog_change, improvement_summary, with_cycle_time
 from agile_mc.pat_store import forget_pat as pat_forget
 from agile_mc.pat_store import keyring_available, load_pat, save_pat
-from agile_mc.plots import cycle_time_figure, how_many_figures, sprint_throughput_figure, when_figures
+from agile_mc.plots import (
+    created_vs_finished_figure,
+    cycle_time_figure,
+    how_many_figures,
+    sprint_throughput_figure,
+    when_figures,
+)
 from agile_mc.secure_store import forget as secure_forget
 from agile_mc.secure_store import load_encrypted, save_encrypted
 from agile_mc.simulation import (
@@ -175,6 +182,7 @@ st.session_state.setdefault("cfg_history_days", 180)
 st.session_state.setdefault("cfg_seed", "")
 st.session_state.setdefault("cfg_project_ratio", 80)
 st.session_state.setdefault("cfg_claude_start", None)
+st.session_state.setdefault("cfg_created_query", "")
 
 
 def _claude_start_setting() -> str | None:
@@ -235,6 +243,7 @@ with st.sidebar:
                             "project": st.session_state.get("cfg_project", ""),
                             "team": st.session_state.get("cfg_team", ""),
                             "query": st.session_state.get("cfg_query", ""),
+                            "created_query": st.session_state.get("cfg_created_query", ""),
                             "done_field": st.session_state.get("cfg_done_field", "AUTO"),
                             "history_days": int(st.session_state.get("cfg_history_days", 180)),
                             "seed": st.session_state.get("cfg_seed", ""),
@@ -324,6 +333,17 @@ with st.sidebar:
                 "Cycle time needs no extra columns: the app reads each item's **Activated Date** itself."
             ),
         )
+        st.text_input(
+            "Created items query (optional)",
+            key="cfg_created_query",
+            placeholder="https://dev.azure.com/{org}/{project}/_queries/query/{id}/",
+            help=(
+                "A second saved query returning **every** item created for the team in the period, in **any** state "
+                "(same Area Path, Work Item Type and Tags filters as the main query, but no State filter, and "
+                "**Created Date** instead of Closed Date). Used to chart items created vs finished per sprint. "
+                "The main query can't be reused: it only returns Done items, so it misses work not yet finished."
+            ),
+        )
         st.selectbox(
             "Done date field",
             options=[
@@ -404,6 +424,7 @@ project = st.session_state.get("cfg_project", "").strip()
 team = st.session_state.get("cfg_team", "").strip()
 pat = st.session_state.get("cfg_pat", "").strip()
 query = st.session_state.get("cfg_query", "").strip()
+created_query = st.session_state.get("cfg_created_query", "").strip()
 
 forecast_start: dt.date = st.session_state["cfg_forecast_start"]
 history_days: int = int(st.session_state["cfg_history_days"])
@@ -451,6 +472,8 @@ if refresh:
             # ValueError that looks like a connection failure.
             _app_logger.info("sync phase: validate saved query")
             validate_saved_query(query)
+            if created_query:
+                validate_saved_query(created_query)
 
             _app_logger.info("sync phase: team settings")
             team_settings = ado.get_team_settings()
@@ -487,6 +510,11 @@ if refresh:
                 working_weekdays=working_weekdays,
                 team_days_off_all=team_days_off_all,
             )
+            if created_query:
+                _app_logger.info("sync phase: fetch created items from saved query")
+                created_items_df = fetch_created_items_from_saved_query(ado, created_query)
+            else:
+                created_items_df = None
 
             sprint_rows = []
             for sp in sprints:
@@ -531,6 +559,7 @@ if refresh:
             st.session_state["ado_daily_df"] = daily_df
             st.session_state["ado_sprint_throughput_df"] = sprint_throughput_df
             st.session_state["ado_done_items_df"] = with_cycle_time(done_items_df)
+            st.session_state["ado_created_items_df"] = created_items_df
             st.session_state["per_date_ratio"] = per_date_ratio
             st.session_state["ado_loaded_history_start"] = history_start
             st.session_state["ado_loaded_history_end"] = history_end
@@ -542,6 +571,7 @@ if refresh:
                         "project": project,
                         "team": team,
                         "query": query,
+                        "created_query": created_query,
                         "done_field": done_field,
                         "history_days": history_days,
                         "seed": st.session_state.get("cfg_seed", ""),
@@ -651,6 +681,17 @@ else:
             hide_index=True,
             width="stretch",
         )
+
+created_items_df = st.session_state.get("ado_created_items_df")
+sprints_window = filtered_imports[SPRINT_THROUGHPUT_TITLE]
+if created_items_df is None:
+    st.caption(
+        "Add a **Created items query** in the sidebar, then refresh, to chart items created vs finished per sprint."
+    )
+elif sprints_window is not None and not sprints_window.empty:
+    flow_df = created_vs_finished(sprints_window, created_items_df)
+    st_plotly(created_vs_finished_figure(flow_df, claude_start=claude_start))
+    st.caption(describe_backlog_change(flow_df))
 
 st.subheader("Forecast")
 

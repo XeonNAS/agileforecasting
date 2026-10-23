@@ -25,6 +25,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   cycle time chart (marker plus before/since 85th-percentile lines). A summary table
   compares sprints, median done per sprint, and median and 85th-percentile cycle
   time for each period. Sprints are assigned by start date, items by done date.
+- **Created vs finished per sprint** (`ado_sync.py`, `flow_metrics.py`, `plots.py`,
+  `app.py`): a new optional **Created items query** setting, saved with the other
+  settings, names a second saved query returning every item created in the period, in
+  any state. A separate query is needed because the main query only returns Done items,
+  so it can't see work that hasn't finished. The *Delivery improvement* section then
+  charts items created against items finished per sprint, with a cumulative
+  backlog-growth line and the Claude start marker, plus a one-line total of how much
+  the backlog grew or shrank. `fetch_done_items_from_saved_query` and
+  `fetch_created_items_from_saved_query` now share one query-and-batch-fetch helper.
 
 ### Removed
 

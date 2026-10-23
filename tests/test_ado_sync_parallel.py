@@ -22,6 +22,7 @@ from agile_mc.ado_sync import (
     Sprint,
     _fetch_sprint_metadata,
     build_capacity_schedule,
+    fetch_created_items_from_saved_query,
     fetch_daily_throughput_from_saved_query,
     fetch_done_items_from_saved_query,
 )
@@ -543,3 +544,47 @@ class TestFetchDoneItems:
         result = fetch_done_items_from_saved_query(self._stub_ado([item]), self._QUERY)
 
         assert result.empty
+
+
+# ---------------------------------------------------------------------------
+# fetch_created_items_from_saved_query
+# ---------------------------------------------------------------------------
+
+
+class TestFetchCreatedItems:
+    _QUERY = "12345678-1234-1234-1234-123456789012"
+
+    def _stub_ado(self, fields_response: List[Dict]) -> MagicMock:
+        ado = MagicMock()
+        ado.wiql_query_by_id.return_value = {"workItems": [{"id": i} for i in range(len(fields_response))]}
+        ado.work_items_batch.return_value = {"value": fields_response}
+        return ado
+
+    def test_requests_created_date(self):
+        ado = self._stub_ado([{"id": 1, "fields": {"System.CreatedDate": "2026-01-12T00:00:00Z"}}])
+
+        fetch_created_items_from_saved_query(ado, self._QUERY)
+
+        assert ado.work_items_batch.call_args.kwargs["fields"] == ["System.CreatedDate"]
+
+    def test_returns_created_date(self):
+        ado = self._stub_ado([{"id": 7, "fields": {"System.CreatedDate": "2026-01-12T09:30:00Z"}}])
+
+        result = fetch_created_items_from_saved_query(ado, self._QUERY)
+
+        assert result.iloc[0]["created_date"] == dt.date(2026, 1, 12)
+
+    def test_items_without_created_date_are_skipped(self):
+        ado = self._stub_ado([{"id": 7, "fields": {}}])
+
+        result = fetch_created_items_from_saved_query(ado, self._QUERY)
+
+        assert result.empty
+
+    def test_empty_query_returns_expected_columns(self):
+        ado = MagicMock()
+        ado.wiql_query_by_id.return_value = {"workItems": []}
+
+        result = fetch_created_items_from_saved_query(ado, self._QUERY)
+
+        assert list(result.columns) == ["work_item_id", "created_date"]

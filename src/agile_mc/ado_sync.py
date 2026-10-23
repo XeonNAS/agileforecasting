@@ -29,6 +29,8 @@ DEFAULT_SPRINT_LENGTH_DAYS = 14
 #: Set by Azure Boards when an item first enters an In Progress state; the start of its cycle time.
 ACTIVATED_DATE_FIELD = "Microsoft.VSTS.Common.ActivatedDate"
 _DONE_ITEM_COLUMNS = ["work_item_id", "activated_date", "done_date"]
+CREATED_DATE_FIELD = "System.CreatedDate"
+_CREATED_ITEM_COLUMNS = ["work_item_id", "created_date"]
 
 # ---------------------------------------------------------------------------
 # Capacity source constants
@@ -844,22 +846,6 @@ def fetch_done_items_from_saved_query(
     done_date_field: str = "AUTO",
 ) -> pd.DataFrame:
     """One row per completed work item: work_item_id, activated_date (None if never activated), done_date."""
-    qid = validate_saved_query(saved_query_url_or_guid)
-
-    # -- WIQL query: retrieve matching work item IDs ----------------------
-    _t_wiql = time.perf_counter()
-    wiql = ado.wiql_query_by_id(qid)
-    work_items = wiql.get("workItems") or []
-    ids = [int(wi.get("id")) for wi in work_items if isinstance(wi, dict) and wi.get("id") is not None]
-    logger.info(
-        "fetch_throughput: WIQL query returned %d work item IDs in %.0fms",
-        len(ids),
-        (time.perf_counter() - _t_wiql) * 1000,
-    )
-
-    if not ids:
-        return pd.DataFrame(columns=_DONE_ITEM_COLUMNS)
-
     candidates: List[str] = []
     if done_date_field and done_date_field != "AUTO":
         candidates.append(done_date_field)
@@ -872,38 +858,7 @@ def fetch_done_items_from_saved_query(
         ]
     )
     done_fields = list(dict.fromkeys(candidates))
-    fields = done_fields + [ACTIVATED_DATE_FIELD]
-
-    # -- Work item batch fetch (parallelised) -----------------------------
-    chunk = 200
-    batches = [ids[i : i + chunk] for i in range(0, len(ids), chunk)]
-    n_workers = min(len(batches), _ADO_MAX_WORKERS)
-    logger.info(
-        "fetch_throughput: fetching %d work items in %d batch(es) [chunk=%d, workers=%d]",
-        len(ids),
-        len(batches),
-        chunk,
-        n_workers,
-    )
-
-    _t_batch = time.perf_counter()
-
-    def _fetch_batch(batch: List[int]) -> List[Dict[str, Any]]:
-        return ado.work_items_batch(batch, fields=fields).get("value") or []
-
-    if len(batches) == 1:
-        all_items: List[Dict[str, Any]] = _fetch_batch(batches[0])
-    else:
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            all_items = []
-            for chunk_items in pool.map(_fetch_batch, batches):
-                all_items.extend(chunk_items)
-
-    logger.info(
-        "fetch_throughput: batch fetch complete — %d items in %.0fms",
-        len(all_items),
-        (time.perf_counter() - _t_batch) * 1000,
-    )
+    all_items = _fetch_saved_query_work_items(ado, saved_query_url_or_guid, done_fields + [ACTIVATED_DATE_FIELD])
 
     # -- Extract done and activated dates ---------------------------------
     _t_tx = time.perf_counter()
@@ -940,6 +895,74 @@ def fetch_done_items_from_saved_query(
         (time.perf_counter() - _t_tx) * 1000,
     )
     return pd.DataFrame(rows, columns=_DONE_ITEM_COLUMNS)
+
+
+def fetch_created_items_from_saved_query(ado: AdoClient, saved_query_url_or_guid: str) -> pd.DataFrame:
+    """One row per work item the query returns, in any state: work_item_id, created_date.
+
+    Needs its own query: the throughput query only returns Done items, so it would
+    miss everything created but not yet finished.
+    """
+    rows: List[Dict[str, Any]] = []
+    for it in _fetch_saved_query_work_items(ado, saved_query_url_or_guid, [CREATED_DATE_FIELD]):
+        f = it.get("fields") if isinstance(it, dict) else None
+        created = parse_ado_dt(f.get(CREATED_DATE_FIELD)) if isinstance(f, dict) else None
+        if created:
+            rows.append({"work_item_id": it.get("id"), "created_date": created.date()})
+    logger.info("fetch_created: extracted %d created dates", len(rows))
+    return pd.DataFrame(rows, columns=_CREATED_ITEM_COLUMNS)
+
+
+def _fetch_saved_query_work_items(
+    ado: AdoClient, saved_query_url_or_guid: str, fields: List[str]
+) -> List[Dict[str, Any]]:
+    """Run a saved query and batch-fetch `fields` for every work item it returns."""
+    qid = validate_saved_query(saved_query_url_or_guid)
+
+    # -- WIQL query: retrieve matching work item IDs ----------------------
+    _t_wiql = time.perf_counter()
+    wiql = ado.wiql_query_by_id(qid)
+    work_items = wiql.get("workItems") or []
+    ids = [int(wi.get("id")) for wi in work_items if isinstance(wi, dict) and wi.get("id") is not None]
+    logger.info(
+        "fetch_query: WIQL query returned %d work item IDs in %.0fms",
+        len(ids),
+        (time.perf_counter() - _t_wiql) * 1000,
+    )
+    if not ids:
+        return []
+
+    # -- Work item batch fetch (parallelised) -----------------------------
+    chunk = 200
+    batches = [ids[i : i + chunk] for i in range(0, len(ids), chunk)]
+    n_workers = min(len(batches), _ADO_MAX_WORKERS)
+    logger.info(
+        "fetch_query: fetching %d work items in %d batch(es) [chunk=%d, workers=%d]",
+        len(ids),
+        len(batches),
+        chunk,
+        n_workers,
+    )
+
+    _t_batch = time.perf_counter()
+
+    def _fetch_batch(batch: List[int]) -> List[Dict[str, Any]]:
+        return ado.work_items_batch(batch, fields=fields).get("value") or []
+
+    if len(batches) == 1:
+        all_items: List[Dict[str, Any]] = _fetch_batch(batches[0])
+    else:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            all_items = []
+            for chunk_items in pool.map(_fetch_batch, batches):
+                all_items.extend(chunk_items)
+
+    logger.info(
+        "fetch_query: batch fetch complete — %d items in %.0fms",
+        len(all_items),
+        (time.perf_counter() - _t_batch) * 1000,
+    )
+    return all_items
 
 
 def daily_throughput_from_done_items(

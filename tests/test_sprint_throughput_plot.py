@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from agile_mc.plots import (
+    created_vs_finished_figure,
     cycle_time_figure,
     how_many_figures,
     sprint_moving_average,
@@ -151,3 +152,37 @@ def test_cycle_time_figure_splits_85th_percentile_by_claude_start():
     fig = cycle_time_figure(_cycle_items(), claude_start=dt.date(2026, 8, 1))
 
     assert "85th percentile since Claude" in _trace_names(fig)
+
+
+def _created_vs_finished_df():
+    df = _sprint_df([5, 8, 6])
+    df["created_count"] = [9, 3, 6]
+    df["net_change"] = [4, -5, 0]
+    df["cumulative_net_change"] = [4, -1, -1]
+    return df
+
+
+def test_created_vs_finished_plots_created_per_sprint():
+    fig = created_vs_finished_figure(_created_vs_finished_df())
+
+    assert list(fig.data[_trace_names(fig).index("Created")].y) == [9, 3, 6]
+
+
+def test_created_vs_finished_plots_finished_per_sprint():
+    fig = created_vs_finished_figure(_created_vs_finished_df())
+
+    assert list(fig.data[_trace_names(fig).index("Finished")].y) == [5, 8, 6]
+
+
+def test_created_vs_finished_plots_cumulative_backlog_change():
+    fig = created_vs_finished_figure(_created_vs_finished_df())
+
+    assert list(fig.data[_trace_names(fig).index("Backlog growth (cumulative)")].y) == [4, -1, -1]
+
+
+def test_created_vs_finished_marks_claude_start():
+    df = _created_vs_finished_df()
+
+    fig = created_vs_finished_figure(df, claude_start=df["start_date"].iloc[1])
+
+    assert fig.layout.shapes[0].x0 == 0.5
