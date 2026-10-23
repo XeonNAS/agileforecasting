@@ -34,6 +34,34 @@ def claude_period(dates: pd.Series, claude_start: dt.date) -> pd.Series:
     )
 
 
+def created_vs_finished(sprint_df: pd.DataFrame, created_items: pd.DataFrame) -> pd.DataFrame:
+    """Per sprint: items created (by created date, inclusive of both sprint ends) against done_count.
+
+    net_change > 0 means the backlog grew that sprint; cumulative_net_change is the running total.
+    """
+    created_dates = pd.to_datetime(created_items["created_date"]).dt.date
+    out = sprint_df.reset_index(drop=True).copy()
+    out["created_count"] = [
+        int(created_dates.between(start, end).sum()) for start, end in zip(out["start_date"], out["end_date"])
+    ]
+    out["net_change"] = out["created_count"] - out["done_count"].astype(int)
+    out["cumulative_net_change"] = out["net_change"].cumsum()
+    return out
+
+
+def describe_backlog_change(flow_df: pd.DataFrame) -> str:
+    created = int(flow_df["created_count"].sum())
+    finished = int(flow_df["done_count"].sum())
+    growth = created - finished
+    if growth > 0:
+        outcome = f"the backlog grew by {growth}"
+    elif growth < 0:
+        outcome = f"the backlog shrank by {-growth}"
+    else:
+        outcome = "no net change"
+    return f"Over these {len(flow_df)} sprints: {created} items created, {finished} finished — {outcome}."
+
+
 def improvement_summary(sprint_df: pd.DataFrame, items_df: pd.DataFrame, claude_start: dt.date) -> pd.DataFrame:
     """Before/since comparison: sprints are assigned by start date, items by done date."""
     sprint_period = claude_period(sprint_df["start_date"], claude_start)

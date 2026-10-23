@@ -11,7 +11,9 @@ from agile_mc.flow_metrics import (
     BEFORE_CLAUDE,
     SINCE_CLAUDE,
     claude_period,
+    created_vs_finished,
     cycle_time_days,
+    describe_backlog_change,
     improvement_summary,
     with_cycle_time,
 )
@@ -95,3 +97,62 @@ class TestImprovementSummary:
         summary = improvement_summary(_sprints(), items, _CLAUDE_START)
 
         assert summary["Items with cycle time"].tolist() == [3, 2]
+
+
+def _two_sprints() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "sprint_name": ["Sprint 1", "Sprint 2"],
+            "start_date": [dt.date(2026, 9, 3), dt.date(2026, 9, 17)],
+            "end_date": [dt.date(2026, 9, 16), dt.date(2026, 9, 30)],
+            "done_count": [5, 8],
+        }
+    )
+
+
+def _created(dates: list[dt.date]) -> pd.DataFrame:
+    return pd.DataFrame({"work_item_id": range(len(dates)), "created_date": dates})
+
+
+class TestCreatedVsFinished:
+    def test_counts_items_created_in_each_sprint(self):
+        created = _created([dt.date(2026, 9, 3), dt.date(2026, 9, 16), dt.date(2026, 9, 17)])
+
+        result = created_vs_finished(_two_sprints(), created)
+
+        assert result["created_count"].tolist() == [2, 1]
+
+    def test_ignores_items_created_outside_the_sprints(self):
+        created = _created([dt.date(2026, 9, 2), dt.date(2026, 10, 1)])
+
+        result = created_vs_finished(_two_sprints(), created)
+
+        assert result["created_count"].tolist() == [0, 0]
+
+    def test_net_change_is_created_minus_finished(self):
+        created = _created([dt.date(2026, 9, 4)] * 9 + [dt.date(2026, 9, 18)] * 3)
+
+        result = created_vs_finished(_two_sprints(), created)
+
+        assert result["net_change"].tolist() == [4, -5]
+
+    def test_cumulative_net_change_running_total(self):
+        created = _created([dt.date(2026, 9, 4)] * 9 + [dt.date(2026, 9, 18)] * 3)
+
+        result = created_vs_finished(_two_sprints(), created)
+
+        assert result["cumulative_net_change"].tolist() == [4, -1]
+
+
+class TestDescribeBacklogChange:
+    def _flow(self, created: list[int], done: list[int]) -> pd.DataFrame:
+        return pd.DataFrame({"created_count": created, "done_count": done})
+
+    def test_reports_backlog_growth(self):
+        assert describe_backlog_change(self._flow([9, 6], [5, 4])).endswith("the backlog grew by 6.")
+
+    def test_reports_backlog_shrinking(self):
+        assert describe_backlog_change(self._flow([3, 2], [5, 4])).endswith("the backlog shrank by 4.")
+
+    def test_reports_no_net_change(self):
+        assert describe_backlog_change(self._flow([5], [5])).endswith("no net change.")
