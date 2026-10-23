@@ -4,9 +4,156 @@ import datetime as dt
 from typing import Dict, List
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 
+from .flow_metrics import BEFORE_CLAUDE, CYCLE_TIME_PERCENTILE, SINCE_CLAUDE, claude_period
 from .simulation import at_least_threshold, completion_cdf_by_date
+
+SPRINT_MOVING_AVERAGE_WINDOW = 3
+CLAUDE_MARKER_COLOR = "#7B1FA2"
+
+
+def _mark_claude_start(fig: go.Figure, x) -> None:
+    fig.add_shape(
+        type="line", x0=x, x1=x, xref="x", y0=0, y1=1, yref="paper", line=dict(color=CLAUDE_MARKER_COLOR, dash="dot")
+    )
+    fig.add_annotation(
+        x=x,
+        y=1,
+        xref="x",
+        yref="paper",
+        text="Claude start",
+        showarrow=False,
+        yanchor="bottom",
+        font=dict(color=CLAUDE_MARKER_COLOR),
+    )
+
+
+def _period_label(period: str) -> str:
+    return period[0].lower() + period[1:]
+
+
+def sprint_moving_average(done_counts: pd.Series, window: int = SPRINT_MOVING_AVERAGE_WINDOW) -> pd.Series:
+    """Trailing mean over `window` sprints; NaN until a full window is available."""
+    return done_counts.astype(float).rolling(window=window, min_periods=window).mean()
+
+
+def sprint_trendline(done_counts: pd.Series) -> pd.Series:
+    """Least-squares linear fit of done count against sprint position; NaN when fewer than two sprints."""
+    if len(done_counts) < 2:
+        return pd.Series(np.nan, index=done_counts.index)
+    positions = np.arange(len(done_counts))
+    slope, intercept = np.polyfit(positions, done_counts.astype(float), 1)
+    return pd.Series(slope * positions + intercept, index=done_counts.index)
+
+
+def sprint_throughput_figure(
+    sprint_throughput_df: pd.DataFrame,
+    window: int = SPRINT_MOVING_AVERAGE_WINDOW,
+    claude_start: dt.date | None = None,
+) -> go.Figure:
+    df = sprint_throughput_df.sort_values("start_date").reset_index(drop=True)
+    moving_avg = sprint_moving_average(df["done_count"], window)
+
+    fig = go.Figure()
+    fig.add_bar(
+        x=df["sprint_name"],
+        y=df["done_count"],
+        name="Done items",
+        hovertemplate="%{x}<br>Done: %{y}<extra></extra>",
+    )
+    fig.add_scatter(
+        x=df["sprint_name"],
+        y=moving_avg,
+        mode="lines+markers",
+        name=f"{window}-sprint moving average",
+        hovertemplate=f"%{{x}}<br>{window}-sprint average: %{{y:.1f}}<extra></extra>",
+    )
+    fig.add_scatter(
+        x=df["sprint_name"],
+        y=sprint_trendline(df["done_count"]),
+        mode="lines",
+        name="Trend",
+        line=dict(dash="dash"),
+        hovertemplate="%{x}<br>Trend: %{y:.1f}<extra></extra>",
+    )
+    if claude_start is not None:
+        periods = claude_period(df["start_date"], claude_start)
+        for period in (BEFORE_CLAUDE, SINCE_CLAUDE):
+            in_period = df[periods == period]
+            if in_period.empty:
+                continue
+            median = float(in_period["done_count"].median())
+            fig.add_scatter(
+                x=[in_period["sprint_name"].iloc[0], in_period["sprint_name"].iloc[-1]],
+                y=[median, median],
+                mode="lines",
+                name=f"Median {_period_label(period)}",
+                line=dict(color=CLAUDE_MARKER_COLOR if period == SINCE_CLAUDE else "#757575", width=3),
+                hovertemplate=f"Median {_period_label(period)}: {median:.1f}<extra></extra>",
+            )
+        since_positions = np.flatnonzero((periods == SINCE_CLAUDE).to_numpy())
+        if since_positions.size:
+            # Category axis: sprint i sits at x=i, so the boundary falls half a step before the first "since" sprint
+            _mark_claude_start(fig, float(since_positions[0]) - 0.5)
+    fig.update_layout(
+        title="Sprint throughput",
+        xaxis_title="Sprint",
+        yaxis_title="Done items",
+        xaxis=dict(type="category", automargin=True),
+        yaxis=dict(rangemode="tozero", automargin=True),
+        margin=dict(l=80, r=120, t=85, b=85),
+        legend=dict(yanchor="top", y=0.98, xanchor="left", x=1.02),
+    )
+    return fig
+
+
+def cycle_time_figure(done_items_df: pd.DataFrame, claude_start: dt.date | None = None) -> go.Figure:
+    timed = done_items_df.dropna(subset=["cycle_time_days"]).sort_values("done_date")
+    cycle = timed["cycle_time_days"].astype(float)
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=timed["done_date"],
+        y=cycle,
+        mode="markers",
+        name="Work items",
+        customdata=timed["work_item_id"],
+        hovertemplate="#%{customdata}<br>Done %{x}<br>Cycle time: %{y} days<extra></extra>",
+    )
+
+    if claude_start is None:
+        groups = [("", timed.index)]
+    else:
+        periods = claude_period(timed["done_date"], claude_start)
+        groups = [(f" {_period_label(p)}", timed.index[periods == p]) for p in (BEFORE_CLAUDE, SINCE_CLAUDE)]
+    for suffix, idx in groups:
+        if len(idx) == 0:
+            continue
+        level = float(np.percentile(cycle.loc[idx], CYCLE_TIME_PERCENTILE))
+        name = f"{CYCLE_TIME_PERCENTILE}th percentile{suffix}"
+        fig.add_scatter(
+            x=[timed.loc[idx, "done_date"].iloc[0], timed.loc[idx, "done_date"].iloc[-1]],
+            y=[level, level],
+            mode="lines",
+            name=name,
+            line=dict(dash="dash", color=CLAUDE_MARKER_COLOR if suffix == f" {_period_label(SINCE_CLAUDE)}" else None),
+            hovertemplate=f"{name}: {level:.1f} days<extra></extra>",
+        )
+    if claude_start is not None:
+        _mark_claude_start(fig, claude_start)
+
+    fig.update_layout(
+        title="Cycle time (activated → done)",
+        xaxis_title="Done date",
+        yaxis_title="Cycle time (days)",
+        xaxis=dict(automargin=True),
+        yaxis=dict(rangemode="tozero", automargin=True),
+        margin=dict(l=80, r=120, t=85, b=85),
+        legend=dict(yanchor="top", y=0.98, xanchor="left", x=1.02),
+    )
+    return fig
 
 
 def how_many_figures(
@@ -132,24 +279,9 @@ def how_many_figures(
         legend=dict(yanchor="top", y=0.98, xanchor="left", x=1.02),
     )
 
-    sorted_samples = np.sort(samples)
-    cdf_y = np.arange(1, len(sorted_samples) + 1) / len(sorted_samples)
-    fig_cdf = go.Figure()
-    fig_cdf.add_scatter(x=sorted_samples, y=cdf_y, mode="lines", line_shape="hv", name="CDF")
-    fig_cdf.update_layout(
-        title="Chance of finishing at most N items",
-        xaxis_title="Items completed",
-        yaxis_title="P(items ≤ x)",
-        yaxis=dict(range=[0, 1], tickformat=".0%", automargin=True),
-        xaxis=dict(automargin=True),
-        margin=dict(l=80, r=120, t=85, b=85),
-        legend=dict(yanchor="top", y=0.98, xanchor="left", x=1.02),
-    )
-
     return {
         "How Many - At Least Chance": fig_at_least,
         "How Many - Exact Probability": fig_pmf,
-        "How Many - At Most Chance": fig_cdf,
     }
 
 

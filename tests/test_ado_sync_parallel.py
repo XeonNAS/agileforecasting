@@ -23,6 +23,7 @@ from agile_mc.ado_sync import (
     _fetch_sprint_metadata,
     build_capacity_schedule,
     fetch_daily_throughput_from_saved_query,
+    fetch_done_items_from_saved_query,
 )
 
 # ---------------------------------------------------------------------------
@@ -493,3 +494,52 @@ class TestExceptionHandlerLogging:
                 mock_logger.exception("ADO sync failed")
 
         mock_logger.exception.assert_called_once_with("ADO sync failed")
+
+
+# ---------------------------------------------------------------------------
+# fetch_done_items_from_saved_query
+# ---------------------------------------------------------------------------
+
+
+class TestFetchDoneItems:
+    _QUERY = "12345678-1234-1234-1234-123456789012"
+
+    def _stub_ado(self, fields_response: List[Dict]) -> MagicMock:
+        ado = MagicMock()
+        ado.wiql_query_by_id.return_value = {"workItems": [{"id": i} for i in range(len(fields_response))]}
+        ado.work_items_batch.return_value = {"value": fields_response}
+        return ado
+
+    def test_requests_activated_date(self):
+        ado = self._stub_ado([{"id": 1, "fields": {"Microsoft.VSTS.Common.ClosedDate": "2026-01-12T00:00:00Z"}}])
+
+        fetch_done_items_from_saved_query(ado, self._QUERY)
+
+        assert "Microsoft.VSTS.Common.ActivatedDate" in ado.work_items_batch.call_args.kwargs["fields"]
+
+    def test_returns_activated_date(self):
+        item = {
+            "id": 7,
+            "fields": {
+                "Microsoft.VSTS.Common.ActivatedDate": "2026-01-05T09:00:00Z",
+                "Microsoft.VSTS.Common.ClosedDate": "2026-01-12T00:00:00Z",
+            },
+        }
+
+        result = fetch_done_items_from_saved_query(self._stub_ado([item]), self._QUERY)
+
+        assert result.iloc[0]["activated_date"] == dt.date(2026, 1, 5)
+
+    def test_missing_activated_date_is_none(self):
+        item = {"id": 7, "fields": {"Microsoft.VSTS.Common.ClosedDate": "2026-01-12T00:00:00Z"}}
+
+        result = fetch_done_items_from_saved_query(self._stub_ado([item]), self._QUERY)
+
+        assert result.iloc[0]["activated_date"] is None
+
+    def test_activated_date_is_never_used_as_done_date(self):
+        item = {"id": 7, "fields": {"Microsoft.VSTS.Common.ActivatedDate": "2026-01-05T09:00:00Z"}}
+
+        result = fetch_done_items_from_saved_query(self._stub_ado([item]), self._QUERY)
+
+        assert result.empty

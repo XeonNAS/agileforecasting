@@ -76,13 +76,8 @@ def simulate_how_many_sprint(
         total = 0
         for chunk in plan:
             samp = float(rng.choice(hist))
-            # Apply sprint capacity factor (team+individual days off)
-            scaled = samp * float(chunk.capacity_factor)
-            # If forecast window covers only part of a sprint, scale by fraction of working days included
-            # compared to that sprint's *planned working days* (chunk.working_dates is already those in window)
-            # The caller should supply chunk.working_dates for that window; we use len / max(len_total,1) outside.
-            # Here we assume caller pre-scaled capacity_factor to the window if needed; keep as-is.
-            total += stochastic_round(scaled, rng)
+            # capacity_factor already covers days off and any partial sprint at the window edges
+            total += stochastic_round(samp * float(chunk.capacity_factor), rng)
         out[i] = total
     return out
 
@@ -109,6 +104,7 @@ def simulate_when_daily(
     n_sims: int,
     seed: Optional[int] = None,
     max_days: int = 800,
+    project_ratio: float = 1.0,
 ) -> WhenSimulationResult:
     rng = np.random.default_rng(seed)
     history = history_counts.astype(float)
@@ -130,7 +126,8 @@ def simulate_when_daily(
             d = forecast_dates[min(day_idx, len(forecast_dates) - 1)]
             samp = float(rng.choice(history))
             ratio = float(per_date_ratio.get(d, 1.0))
-            done = stochastic_round(samp * ratio, rng)
+            # Scale before rounding: rounding small daily counts by the ratio first distorts it
+            done = stochastic_round(samp * ratio * project_ratio, rng)
             remaining -= done
             if remaining <= 0:
                 out.append(d)
@@ -143,6 +140,43 @@ def simulate_when_daily(
             # a placeholder, not a genuine completion date. Callers must surface
             # unfinished_count rather than silently plotting this as real.
             out.append(forecast_dates[-1])
+            unfinished_count += 1
+    return WhenSimulationResult(out, unfinished_count)
+
+
+def simulate_when_sprint(
+    history_sprint_counts: np.ndarray,
+    plan: List[SprintPlanChunk],
+    items_remaining: int,
+    n_sims: int,
+    seed: Optional[int] = None,
+    project_ratio: float = 1.0,
+) -> WhenSimulationResult:
+    """Sprint-at-a-time When forecast; a completion is reported as the last working date of its sprint.
+
+    Simulations still unfinished after the final plan chunk are counted in
+    unfinished_count and given that chunk's last date as a placeholder.
+    """
+    rng = np.random.default_rng(seed)
+    hist = history_sprint_counts.astype(float)
+    plan = [chunk for chunk in plan if chunk.working_dates]
+    if hist.size == 0 or not plan or items_remaining <= 0:
+        degenerate = plan[0].working_dates[0] if plan else dt.date.today()
+        return WhenSimulationResult([degenerate] * n_sims, unfinished_count=0)
+
+    placeholder = plan[-1].working_dates[-1]
+    out: List[dt.date] = []
+    unfinished_count = 0
+    for _ in range(n_sims):
+        remaining = int(items_remaining)
+        for chunk in plan:
+            samp = float(rng.choice(hist))
+            remaining -= stochastic_round(samp * float(chunk.capacity_factor) * project_ratio, rng)
+            if remaining <= 0:
+                out.append(chunk.working_dates[-1])
+                break
+        else:
+            out.append(placeholder)
             unfinished_count += 1
     return WhenSimulationResult(out, unfinished_count)
 

@@ -7,10 +7,13 @@ import datetime as dt
 import numpy as np
 
 from agile_mc.simulation import (
+    SprintPlanChunk,
     at_least_threshold,
     completion_cdf_by_date,
     simulate_how_many_daily,
+    simulate_how_many_sprint,
     simulate_when_daily,
+    simulate_when_sprint,
     split_sample_counts,
     stochastic_round,
     threshold_breakdown,
@@ -214,6 +217,77 @@ class TestSimulateWhenDaily:
         result = simulate_when_daily(history, dates, {}, items_remaining=10, n_sims=20, seed=0, max_days=50)
         assert result.unfinished_count == 20
         assert all(d == dates[-1] for d in result.completion_dates)
+
+    def test_project_ratio_halves_daily_throughput(self):
+        """Regression: the When forecast used to round each history day by the
+        project ratio before simulating (np.rint(1 * 0.5) == 0), so a team doing
+        one item a day at 50% project never finished. Scaling inside the
+        simulation keeps the expected rate at 0.5 items/day → ~100 days for 50."""
+        start = dt.date(2026, 3, 2)
+        dates = self._dates(start, 400)
+
+        result = simulate_when_daily(
+            np.array([1]), dates, {}, items_remaining=50, n_sims=500, seed=3, project_ratio=0.5
+        )
+
+        mean_days = np.mean([(d - start).days + 1 for d in result.completion_dates])
+        assert 90 <= mean_days <= 110
+
+
+# ---------------------------------------------------------------------------
+# Sprint-basis simulators
+# ---------------------------------------------------------------------------
+
+
+def _plan(n_sprints: int, capacity_factor: float = 1.0) -> list[SprintPlanChunk]:
+    start = dt.date(2026, 3, 2)
+    plan = []
+    for i in range(n_sprints):
+        sprint_start = start + dt.timedelta(days=14 * i)
+        working = [
+            sprint_start + dt.timedelta(days=k)
+            for k in range(14)
+            if (sprint_start + dt.timedelta(days=k)).weekday() < 5
+        ]
+        plan.append(SprintPlanChunk(f"Sprint {i + 1}", i + 1, working, capacity_factor))
+    return plan
+
+
+class TestSimulateHowManySprint:
+    def test_capacity_factor_scales_each_sprint(self):
+        result = simulate_how_many_sprint(np.array([10]), _plan(2, capacity_factor=0.5), n_sims=50, seed=0)
+
+        assert set(result.tolist()) == {10}
+
+
+class TestSimulateWhenSprint:
+    def test_completes_in_the_sprint_that_clears_the_backlog(self):
+        plan = _plan(5)
+
+        result = simulate_when_sprint(np.array([5]), plan, items_remaining=12, n_sims=20, seed=0)
+
+        assert set(result.completion_dates) == {plan[2].working_dates[-1]}
+
+    def test_capacity_factor_slows_completion(self):
+        plan = _plan(5, capacity_factor=0.5)
+
+        result = simulate_when_sprint(np.array([10]), plan, items_remaining=10, n_sims=20, seed=0)
+
+        assert set(result.completion_dates) == {plan[1].working_dates[-1]}
+
+    def test_project_ratio_slows_completion(self):
+        plan = _plan(5)
+
+        result = simulate_when_sprint(np.array([10]), plan, items_remaining=10, n_sims=20, seed=0, project_ratio=0.5)
+
+        assert set(result.completion_dates) == {plan[1].working_dates[-1]}
+
+    def test_reports_unfinished_when_plan_runs_out(self):
+        plan = _plan(3)
+
+        result = simulate_when_sprint(np.array([0]), plan, items_remaining=10, n_sims=20, seed=0)
+
+        assert result.unfinished_count == 20
 
 
 # ---------------------------------------------------------------------------
