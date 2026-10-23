@@ -18,8 +18,10 @@ from agile_mc.ado_client import AdoClient, AdoRef
 from agile_mc.ado_sync import (
     SavedQueryParseError,
     build_capacity_schedule,
+    build_sprint_plan,
+    daily_throughput_from_done_items,
     extract_sprint_number,
-    fetch_daily_throughput_from_saved_query,
+    fetch_done_items_from_saved_query,
     fetch_sprints,
     handle_ado_sync_exception,
     validate_saved_query,
@@ -29,17 +31,24 @@ from agile_mc.app_logging import LOG_LEVEL_OPTIONS, configure_logging, load_log_
 from agile_mc.auth import get_app_password
 from agile_mc.calendar_export import build_when_calendar_figure
 from agile_mc.chart_export import BrowserNotAvailableError, export_plotly_figure
+from agile_mc.flow_metrics import improvement_summary, with_cycle_time
 from agile_mc.pat_store import forget_pat as pat_forget
 from agile_mc.pat_store import keyring_available, load_pat, save_pat
-from agile_mc.plots import how_many_figures, when_figures
+from agile_mc.plots import cycle_time_figure, how_many_figures, sprint_throughput_figure, when_figures
 from agile_mc.secure_store import forget as secure_forget
 from agile_mc.secure_store import load_encrypted, save_encrypted
 from agile_mc.simulation import (
     simulate_how_many_daily,
+    simulate_how_many_sprint,
     simulate_when_daily,
+    simulate_when_sprint,
     split_sample_counts,
     threshold_breakdown,
 )
+
+SPRINT_THROUGHPUT_TITLE = "Derived sprint throughput (completed sprints only)"
+SPRINT_BASIS = "throughput_sprint"
+DONE_ITEMS_TITLE = "Completed items with cycle time"
 
 
 def st_plotly(fig):
@@ -73,6 +82,10 @@ def filter_df_for_history_window(
 
     out = df.copy()
 
+    if title == DONE_ITEMS_TITLE and "done_date" in out.columns:
+        mask = _to_date_series(out["done_date"]).between(history_start, history_end)
+        return out.loc[mask].reset_index(drop=True)
+
     if title == "Daily throughput (Done items by date)" and "date" in out.columns:
         dates = _to_date_series(out["date"])
         mask = dates.between(history_start, history_end)
@@ -81,12 +94,12 @@ def filter_df_for_history_window(
     if title in {
         "Sprints (iterations)",
         "Sprint capacity schedule",
-        "Derived sprint throughput (completed sprints only)",
+        SPRINT_THROUGHPUT_TITLE,
     }:
         if "end_date" in out.columns:
             end_dates = _to_date_series(out["end_date"])
             mask = end_dates >= history_start
-            if title == "Derived sprint throughput (completed sprints only)":
+            if title == SPRINT_THROUGHPUT_TITLE:
                 mask = mask & end_dates.between(history_start, history_end)
             return out.loc[mask].reset_index(drop=True)
         if "start_date" in out.columns:
@@ -161,6 +174,14 @@ st.session_state.setdefault("cfg_done_field", "AUTO")
 st.session_state.setdefault("cfg_history_days", 180)
 st.session_state.setdefault("cfg_seed", "")
 st.session_state.setdefault("cfg_project_ratio", 80)
+st.session_state.setdefault("cfg_claude_start", None)
+
+
+def _claude_start_setting() -> str | None:
+    claude_start = st.session_state.get("cfg_claude_start")
+    return claude_start.isoformat() if isinstance(claude_start, dt.date) else None
+
+
 st.session_state.setdefault("cfg_log_level", load_log_level())
 
 
@@ -194,6 +215,8 @@ with st.sidebar:
                     data = load_encrypted(st.session_state["cfg_passphrase"]) or {}
                     data.pop("pat", None)  # PAT is no longer saved; discard if present in older files
                     for k, v in data.items():
+                        if k == "claude_start" and v:
+                            v = dt.date.fromisoformat(v)
                         st.session_state[f"cfg_{k}"] = v
                     st.success("Loaded saved settings.")
                     st.rerun()
@@ -216,6 +239,7 @@ with st.sidebar:
                             "history_days": int(st.session_state.get("cfg_history_days", 180)),
                             "seed": st.session_state.get("cfg_seed", ""),
                             "project_ratio": int(st.session_state.get("cfg_project_ratio", 80)),
+                            "claude_start": _claude_start_setting(),
                         },
                         st.session_state["cfg_passphrase"],
                     )
@@ -296,7 +320,8 @@ with st.sidebar:
                 "Enter the URL of a saved Azure DevOps query that returns the team's completed work items "
                 "for the timeframe you want to analyse. "
                 "The query should only include items with **State = Done** and a **State Changed Date** within that period. "
-                "Make sure the query shows these columns: **ID, Work Item Type, Title, State, and State Changed Date**."
+                "Make sure the query shows these columns: **ID, Work Item Type, Title, State, and State Changed Date**. "
+                "Cycle time needs no extra columns: the app reads each item's **Activated Date** itself."
             ),
         )
         st.selectbox(
@@ -346,6 +371,18 @@ with st.sidebar:
         st.number_input("Items remaining", min_value=1, value=50, step=1, key="cfg_items_remaining")
 
     st.slider("Calendar months to show (When)", min_value=1, max_value=24, value=3, key="cfg_months")
+
+    st.divider()
+    st.subheader("Delivery improvement")
+    st.date_input(
+        "Claude start date (optional)",
+        key="cfg_claude_start",
+        format="YYYY-MM-DD",
+        help=(
+            "When set, the sprint throughput and cycle time charts are split into before and since this date, "
+            "with a summary comparing the two periods. Sprints count from their start date, items from their done date."
+        ),
+    )
 
     st.divider()
     st.subheader("App settings")
@@ -438,14 +475,17 @@ if refresh:
             history_start = history_end - dt.timedelta(days=history_days)
 
             _app_logger.info("sync phase: fetch throughput from saved query")
-            daily_df = fetch_daily_throughput_from_saved_query(
+            done_items_df = fetch_done_items_from_saved_query(
                 ado=ado,
                 saved_query_url_or_guid=query,
+                done_date_field=done_field,
+            )
+            daily_df = daily_throughput_from_done_items(
+                done_items_df,
                 history_start=history_start,
                 history_end=history_end,
                 working_weekdays=working_weekdays,
                 team_days_off_all=team_days_off_all,
-                done_date_field=done_field,
             )
 
             sprint_rows = []
@@ -490,6 +530,7 @@ if refresh:
             st.session_state["ado_capacity_df"] = capacity_df
             st.session_state["ado_daily_df"] = daily_df
             st.session_state["ado_sprint_throughput_df"] = sprint_throughput_df
+            st.session_state["ado_done_items_df"] = with_cycle_time(done_items_df)
             st.session_state["per_date_ratio"] = per_date_ratio
             st.session_state["ado_loaded_history_start"] = history_start
             st.session_state["ado_loaded_history_end"] = history_end
@@ -504,6 +545,7 @@ if refresh:
                         "done_field": done_field,
                         "history_days": history_days,
                         "seed": st.session_state.get("cfg_seed", ""),
+                        "claude_start": _claude_start_setting(),
                     },
                     passphrase2,
                 )
@@ -569,10 +611,14 @@ imports_to_render = [
     ("Sprints (iterations)", st.session_state["ado_sprints_df"]),
     ("Sprint capacity schedule", st.session_state["ado_capacity_df"]),
     ("Daily throughput (Done items by date)", st.session_state["ado_daily_df"]),
-    ("Derived sprint throughput (completed sprints only)", st.session_state["ado_sprint_throughput_df"]),
+    (SPRINT_THROUGHPUT_TITLE, st.session_state["ado_sprint_throughput_df"]),
+    # Absent for data loaded before cycle time was added; empty until the next refresh.
+    (DONE_ITEMS_TITLE, st.session_state.get("ado_done_items_df", pd.DataFrame())),
 ]
+claude_start: dt.date | None = st.session_state.get("cfg_claude_start")
 
 st.subheader("Azure DevOps imports")
+filtered_imports: Dict[str, pd.DataFrame] = {}
 for title, raw_df in imports_to_render:
     filtered_df = filter_df_for_history_window(
         title=title,
@@ -580,7 +626,31 @@ for title, raw_df in imports_to_render:
         history_start=display_history_start,
         history_end=display_history_end,
     )
+    filtered_imports[title] = filtered_df
     render_df_expander(title, filtered_df)
+    if title == SPRINT_THROUGHPUT_TITLE and filtered_df is not None and not filtered_df.empty:
+        st_plotly(sprint_throughput_figure(filtered_df, claude_start=claude_start))
+
+st.subheader("Delivery improvement")
+done_items_window = filtered_imports[DONE_ITEMS_TITLE]
+if done_items_window is None or done_items_window.empty:
+    st.caption("No completed items loaded yet. Click **Refresh from Azure DevOps** to load cycle times.")
+else:
+    never_activated = int(done_items_window["cycle_time_days"].isna().sum())
+    if never_activated:
+        st.caption(
+            f"{never_activated} of {len(done_items_window)} completed items have no Activated Date "
+            "(moved straight to Done) and are left out of cycle time."
+        )
+    st_plotly(cycle_time_figure(done_items_window, claude_start=claude_start))
+    if claude_start is None:
+        st.caption("Set a **Claude start date** in the sidebar to compare before and since.")
+    else:
+        st.dataframe(
+            improvement_summary(filtered_imports[SPRINT_THROUGHPUT_TITLE], done_items_window, claude_start),
+            hide_index=True,
+            width="stretch",
+        )
 
 st.subheader("Forecast")
 
@@ -609,6 +679,22 @@ n_sims = int(st.session_state["cfg_sims"])
 seed_val = st.session_state.get("cfg_seed", "")
 seed = int(seed_val) if str(seed_val).strip().isdigit() else None
 project_ratio = float(int(st.session_state.get("cfg_project_ratio", 80))) / 100.0
+is_sprint_basis = basis == SPRINT_BASIS
+sprints = st.session_state["sprints"]
+
+if is_sprint_basis:
+    hist_sprint_counts = filter_df_for_history_window(
+        title=SPRINT_THROUGHPUT_TITLE,
+        df=st.session_state["ado_sprint_throughput_df"],
+        history_start=display_history_start,
+        history_end=display_history_end,
+    )["done_count"].to_numpy(dtype=int)
+    if hist_sprint_counts.size == 0:
+        st.error(
+            "No completed sprints fall inside the history window, so a sprint-basis forecast can't run. "
+            "Increase History Days or switch Forecast basis to throughput_daily."
+        )
+        st.stop()
 
 if mode.startswith("How Many"):
     target_date: dt.date = st.session_state["cfg_target_date"]
@@ -621,7 +707,11 @@ if mode.startswith("How Many"):
         for d in (forecast_start + dt.timedelta(days=i) for i in range((target_date - forecast_start).days + 1))
         if is_working_day(d)
     ]
-    samples = simulate_how_many_daily(hist_daily_counts, forecast_dates, per_date_ratio, n_sims=n_sims, seed=seed)
+    if is_sprint_basis:
+        sprint_plan = build_sprint_plan(sprints, forecast_start, target_date, working_weekdays, per_date_ratio)
+        samples = simulate_how_many_sprint(hist_sprint_counts, sprint_plan, n_sims=n_sims, seed=seed)
+    else:
+        samples = simulate_how_many_daily(hist_daily_counts, forecast_dates, per_date_ratio, n_sims=n_sims, seed=seed)
     project_samples, bau_samples = split_sample_counts(samples, project_ratio, seed=seed)
 
     n50, p50_project, p50_bau = threshold_breakdown(samples, project_samples, bau_samples, 0.50)
@@ -731,15 +821,26 @@ else:
         st.error("No working days in the forecast window. Check team settings / days off.")
         st.stop()
 
-    when_result = simulate_when_daily(
-        history_counts=np.rint(hist_daily_counts.astype(float) * project_ratio).astype(int),
-        forecast_dates=working_dates,
-        per_date_ratio=per_date_ratio,
-        items_remaining=items_remaining,
-        n_sims=n_sims,
-        seed=seed,
-        max_days=max_when_days,
-    )
+    if is_sprint_basis:
+        when_result = simulate_when_sprint(
+            history_sprint_counts=hist_sprint_counts,
+            plan=build_sprint_plan(sprints, forecast_start, working_dates[-1], working_weekdays, per_date_ratio),
+            items_remaining=items_remaining,
+            n_sims=n_sims,
+            seed=seed,
+            project_ratio=project_ratio,
+        )
+    else:
+        when_result = simulate_when_daily(
+            history_counts=hist_daily_counts,
+            forecast_dates=working_dates,
+            per_date_ratio=per_date_ratio,
+            items_remaining=items_remaining,
+            n_sims=n_sims,
+            seed=seed,
+            max_days=max_when_days,
+            project_ratio=project_ratio,
+        )
     completion_dates = when_result.completion_dates
 
     # If a large enough share of simulations never finish within max_when_days,
@@ -783,7 +884,6 @@ else:
         _unfinished_horizon_dialog()
         st.stop()
 
-    sprints = st.session_state["sprints"]
     sprint_label_by_date: Dict[dt.date, str] = {}
     for sp in sprints:
         num = extract_sprint_number(sp.name)

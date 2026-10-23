@@ -8,6 +8,55 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Sprint throughput chart** (`plots.py`, `app.py`): drawn below the *Derived sprint
+  throughput* table, with one bar per completed sprint in the history window, a
+  3-sprint moving average (blank until three sprints exist), and a least-squares
+  trendline.
+- **Cycle time** (`ado_sync.py`, `flow_metrics.py`, `app.py`): the saved-query fetch
+  now also reads `Microsoft.VSTS.Common.ActivatedDate`, so the saved query needs no
+  extra columns. Cycle time is calendar days from activation to done, counting both
+  ends. A new *Delivery improvement* section plots each item's cycle time with an
+  85th-percentile line and reports how many items had no Activated Date. A new
+  *Completed items with cycle time* table lists every item in the history window.
+- **Claude start date** (optional sidebar setting, saved with encrypted settings):
+  splits the sprint throughput chart (marker plus before/since median lines) and the
+  cycle time chart (marker plus before/since 85th-percentile lines). A summary table
+  compares sprints, median done per sprint, and median and 85th-percentile cycle
+  time for each period. Sprints are assigned by start date, items by done date.
+
+### Removed
+
+- **"Chance of finishing at most N items" chart** from How Many results and the chart
+  download list. It answered a different question from the at-least forecast lines
+  and was easily misread.
+
+### Fixed
+
+- **Forecast basis `throughput_sprint` was ignored** (`app.py`, `simulation.py`,
+  `ado_sync.py`): both forecast types always ran the daily simulator, and the basis
+  was only written into the summary output. Sprint basis now samples completed-sprint
+  totals. `build_sprint_plan` splits the forecast window into sprints, scaled for
+  capacity and partial overlap, and continues past the last known sprint as
+  same-length "Future sprint N" chunks. A new `simulate_when_sprint` reports each
+  completion on the last working day of its sprint.
+- **When forecast distorted the Project work %** (`app.py`, `simulation.py`): history
+  was rounded with `np.rint(daily_count * project_ratio)` before simulating, so 50%
+  behaved like roughly 38%. A team doing one item a day at 50% or less never finished
+  at all, because `rint(0.5) == 0`. The ratio is now applied inside
+  `simulate_when_daily` before stochastic rounding.
+
+### Security
+
+- **Dependency pins updated to clear `pip-audit`** (`requirements.lock`): 81 advisories
+  published since July against certifi, cryptography, gitpython, pillow, tornado and
+  urllib3. Streamlit 1.56.0 → 1.66.1, which allows Pillow 13 and replaces Tornado with
+  Starlette/Uvicorn, so tornado and gitpython are no longer installed.
+  cryptography 49.0.0 → 50.0.2, certifi 2026.10.19, urllib3 2.8.0. Regenerated with
+  `uv pip compile --python-version 3.12 --python-platform x86_64-manylinux_2_28`,
+  upgrading only these packages.
+
 ---
 
 ## [0.1.6] — 2026-06-04

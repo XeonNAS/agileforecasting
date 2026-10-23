@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import pandas as pd
 
 from .ado_client import AdoClient
+from .simulation import SprintPlanChunk
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,13 @@ logger = logging.getLogger(__name__)
 # per sprint (3 calls × ~200–500 ms each), so even 4 workers gives a large
 # speedup on typical team sizes of 10–30 sprints.
 _ADO_MAX_WORKERS = 4
+
+#: Length of synthesised future sprints when the team has no iterations to copy.
+DEFAULT_SPRINT_LENGTH_DAYS = 14
+
+#: Set by Azure Boards when an item first enters an In Progress state; the start of its cycle time.
+ACTIVATED_DATE_FIELD = "Microsoft.VSTS.Common.ActivatedDate"
+_DONE_ITEM_COLUMNS = ["work_item_id", "activated_date", "done_date"]
 
 # ---------------------------------------------------------------------------
 # Capacity source constants
@@ -666,6 +674,50 @@ SAVED_QUERY_PARSE_MESSAGE = (
 )
 
 
+def build_sprint_plan(
+    sprints: List[Sprint],
+    forecast_start: dt.date,
+    forecast_end: dt.date,
+    working_weekdays: Set[int],
+    per_date_ratio: Dict[dt.date, float],
+) -> List[SprintPlanChunk]:
+    """Split the forecast window into sprint chunks for the sprint-basis simulators.
+
+    Past the last known sprint, the window continues as "Future sprint N" chunks of
+    the same calendar length. capacity_factor is the sum of in-window day ratios over
+    the sprint's full working-day count, so it covers both days off and a window that
+    only partly overlaps a sprint.
+    """
+    ordered = sorted(sprints, key=lambda sp: sp.start_date)
+    periods = [(sp.name, extract_sprint_number(sp.name), sp.start_date, sp.end_inclusive) for sp in ordered]
+
+    if ordered:
+        length_days = (ordered[-1].end_inclusive - ordered[-1].start_date).days + 1
+        next_start = ordered[-1].end_inclusive + dt.timedelta(days=1)
+    else:
+        length_days = DEFAULT_SPRINT_LENGTH_DAYS
+        next_start = forecast_start
+    future_num = 1
+    while next_start <= forecast_end:
+        next_end = next_start + dt.timedelta(days=length_days - 1)
+        periods.append((f"Future sprint {future_num}", None, next_start, next_end))
+        next_start = next_end + dt.timedelta(days=1)
+        future_num += 1
+
+    plan: List[SprintPlanChunk] = []
+    for name, num, start, end in periods:
+        if end < forecast_start or start > forecast_end:
+            continue
+        sprint_days = [d for d in iter_dates(start, end) if d.weekday() in working_weekdays]
+        window_days = [d for d in sprint_days if forecast_start <= d <= forecast_end]
+        working_dates = [d for d in window_days if per_date_ratio.get(d, 1.0) > 0.0]
+        if not working_dates:
+            continue
+        ratio_sum = sum(per_date_ratio.get(d, 1.0) for d in window_days)
+        plan.append(SprintPlanChunk(name, num, working_dates, ratio_sum / len(sprint_days)))
+    return plan
+
+
 class SavedQueryParseError(ValueError):
     """Raised when a saved-query URL or GUID cannot be parsed into a query GUID.
 
@@ -782,6 +834,16 @@ def fetch_daily_throughput_from_saved_query(
     team_days_off_all: Set[dt.date],
     done_date_field: str = "AUTO",
 ) -> pd.DataFrame:
+    done_items = fetch_done_items_from_saved_query(ado, saved_query_url_or_guid, done_date_field)
+    return daily_throughput_from_done_items(done_items, history_start, history_end, working_weekdays, team_days_off_all)
+
+
+def fetch_done_items_from_saved_query(
+    ado: AdoClient,
+    saved_query_url_or_guid: str,
+    done_date_field: str = "AUTO",
+) -> pd.DataFrame:
+    """One row per completed work item: work_item_id, activated_date (None if never activated), done_date."""
     qid = validate_saved_query(saved_query_url_or_guid)
 
     # -- WIQL query: retrieve matching work item IDs ----------------------
@@ -796,7 +858,7 @@ def fetch_daily_throughput_from_saved_query(
     )
 
     if not ids:
-        return _zero_filled_daily(history_start, history_end, working_weekdays, team_days_off_all)
+        return pd.DataFrame(columns=_DONE_ITEM_COLUMNS)
 
     candidates: List[str] = []
     if done_date_field and done_date_field != "AUTO":
@@ -809,7 +871,8 @@ def fetch_daily_throughput_from_saved_query(
             "System.ChangedDate",
         ]
     )
-    fields = list(dict.fromkeys(candidates))
+    done_fields = list(dict.fromkeys(candidates))
+    fields = done_fields + [ACTIVATED_DATE_FIELD]
 
     # -- Work item batch fetch (parallelised) -----------------------------
     chunk = 200
@@ -842,9 +905,9 @@ def fetch_daily_throughput_from_saved_query(
         (time.perf_counter() - _t_batch) * 1000,
     )
 
-    # -- Extract done dates -----------------------------------------------
+    # -- Extract done and activated dates ---------------------------------
     _t_tx = time.perf_counter()
-    done_dates: List[dt.date] = []
+    rows: List[Dict[str, Any]] = []
     for it in all_items:
         if not isinstance(it, dict):
             continue
@@ -852,7 +915,7 @@ def fetch_daily_throughput_from_saved_query(
         if not isinstance(f, dict):
             continue
         picked = None
-        for k in fields:
+        for k in done_fields:
             if f.get(k):
                 picked = f.get(k)
                 break
@@ -861,21 +924,37 @@ def fetch_daily_throughput_from_saved_query(
         dtd = parse_ado_dt(picked)
         if not dtd:
             continue
-        done_dates.append(dtd.date())
+        activated = parse_ado_dt(f.get(ACTIVATED_DATE_FIELD))
+        rows.append(
+            {
+                "work_item_id": it.get("id"),
+                "activated_date": activated.date() if activated else None,
+                "done_date": dtd.date(),
+            }
+        )
 
     logger.info(
         "fetch_throughput: extracted %d done dates from %d items in %.0fms",
-        len(done_dates),
+        len(rows),
         len(all_items),
         (time.perf_counter() - _t_tx) * 1000,
     )
+    return pd.DataFrame(rows, columns=_DONE_ITEM_COLUMNS)
 
-    if not done_dates:
+
+def daily_throughput_from_done_items(
+    done_items: pd.DataFrame,
+    history_start: dt.date,
+    history_end: dt.date,
+    working_weekdays: Set[int],
+    team_days_off_all: Set[dt.date],
+) -> pd.DataFrame:
+    if done_items.empty:
         return _zero_filled_daily(history_start, history_end, working_weekdays, team_days_off_all)
 
     # -- Build daily throughput dataframe ---------------------------------
     _t_df = time.perf_counter()
-    ser = pd.Series(done_dates, name="date").value_counts().sort_index()
+    ser = pd.Series(done_items["done_date"].tolist(), name="date").value_counts().sort_index()
     df = ser.reset_index()
     df.columns = ["date", "done_count"]
     df["date"] = pd.to_datetime(df["date"]).dt.date
